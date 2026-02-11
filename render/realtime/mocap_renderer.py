@@ -1,6 +1,7 @@
 import os
 import sys
 import itertools
+import datetime
 
 import torch
 import torch.nn.functional as F
@@ -57,6 +58,17 @@ class PBLMocapViewer:
         # connection_mode = pb.GUI if env.is_rendered else pb.DIRECT
         connection_mode = pb.DIRECT
         self._p = BulletClient(connection_mode=connection_mode)
+
+
+        # now_string = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        # self.video_filename = f"{now_string}.mp4"
+
+        # try:
+        #     self._p.startStateLogging(self._p.STATE_LOGGING_VIDEO_MP4, self.video_filename)
+        #     print("Recording to", self.video_filename)
+        # except Exception as e:
+        #     print("MP4 logging failed:", e)
+
         self._p.configureDebugVisualizer(pb.COV_ENABLE_GUI, 0)
         self._p.configureDebugVisualizer(pb.COV_ENABLE_KEYBOARD_SHORTCUTS, 0)
         self._p.configureDebugVisualizer(pb.COV_ENABLE_MOUSE_PICKING, 0)
@@ -222,7 +234,17 @@ class PBLMocapViewer:
         else:
             self.camera.wait()
 
+        if not hasattr(self, "_frames"):
+            self._frames = []
+
+        img = self.camera.dump_rgb_array()
+        self._frames.append(img)
+
     def close(self):
+        # try:
+        #     self._p.stopStateLogging(self._p.STATE_LOGGING_VIDEO_MP4)
+        # except Exception:
+        #     pass
         self._p.disconnect()
         sys.exit(0)
 

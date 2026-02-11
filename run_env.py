@@ -1,6 +1,7 @@
 import warnings
 warnings.filterwarnings("ignore")
 
+import imageio
 import os
 import sys
 import shutil
@@ -83,6 +84,7 @@ def test_no_agent(env):
     with EpisodeRunner(env) as runner:
         while not runner.done:
             frame = env.get_next_frame()
+            print("WE GOT A FRAME ")
             for i in range(env.frame_skip):
                 _, reward, done, info = env.calc_env_state(frame)
 
@@ -95,6 +97,49 @@ def test_no_agent(env):
                 #except:
                 #    if info.get("reset"):
                 #        env.reset()
+            env.render() # CHANGED
+    # print("Writing video, frames:", len(viewer._frames))
+    # imageio.mimwrite(
+    #     "rollout.mp4",
+    #     viewer._frames,
+    #     fps=env.dataset.fps,
+    #     codec="libx264",
+    #     quality=8
+    # )
+    # print("Saved rollout.mp4")
+    viewer = None
+    for attr in ["viewer", "renderer", "mocap_renderer", "render_obj"]:
+        if hasattr(env, attr):
+            viewer = getattr(env, attr)
+            break
+
+    # Sometimes env wraps another env
+    if viewer is None and hasattr(env, "env"):
+        for attr in ["viewer", "renderer", "mocap_renderer", "render_obj"]:
+            if hasattr(env.env, attr):
+                viewer = getattr(env.env, attr)
+                break
+
+    # If your viewer is stored deeper (common), search one level down
+    if viewer is None:
+        for v in env.dict.values():
+            if hasattr(v, "_frames"):
+                viewer = v
+                break
+
+    assert viewer is not None, "Could not find viewer/renderer on env"
+    assert hasattr(viewer, "_frames"), "Viewer does not have _frames (did you add frame-capture in PBLMocapViewer.render?)"
+
+    print("Frames captured:", len(viewer._frames))
+    imageio.mimwrite(
+        "rollout.mp4",
+        viewer._frames,
+        fps=env.dataset.fps,
+        codec="libx264",
+        quality=8,
+    )
+    print("Saved rollout.mp4")
+
     return      
 
 

@@ -135,7 +135,7 @@ class FPSController:
 
 
 class EpisodeRunner(object):
-    def __init__(self, env, save=False, dir=None, max_steps=None, csv=None):
+    def __init__(self, env, save=False, dir=None, max_steps=10, csv=None):
         self.env = env
         self.save = save
         self.done = False
@@ -182,9 +182,13 @@ class EpisodeRunner(object):
 
     def override_render(self):
 
+
         old_render_func = self.env.render
 
         runner = self
+        print('Inside override') 
+        print('Max step:', runner.max_steps)
+        print('Runner step: ', runner.step)
 
         def new_render(self):
             old_render_func()
@@ -194,6 +198,9 @@ class EpisodeRunner(object):
 
             if runner.pbar is not None:
                 runner.pbar.update(1)
+            
+            if (runner.step % 20) == 0:
+                print(runner.step)
 
             if runner.step >= runner.max_steps:
                 runner.done = True
