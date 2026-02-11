@@ -54,7 +54,8 @@ class PBLMocapViewer:
         self.camera_distance = 6 if self.camera_tracking else 12
         self.camera_smooth = np.array([1, 1, 1])
 
-        connection_mode = pb.GUI if env.is_rendered else pb.DIRECT
+        # connection_mode = pb.GUI if env.is_rendered else pb.DIRECT
+        connection_mode = pb.DIRECT
         self._p = BulletClient(connection_mode=connection_mode)
         self._p.configureDebugVisualizer(pb.COV_ENABLE_GUI, 0)
         self._p.configureDebugVisualizer(pb.COV_ENABLE_KEYBOARD_SHORTCUTS, 0)
@@ -307,16 +308,23 @@ class PBLMocapViewer:
         for param in self.parameters:
             param["id"] = self._p.addUserDebugParameter(*param["args"])
 
+    # def _handle_parameter_update(self):
+    #     for param in self.parameters:
+    #         func = param["func"]
+    #         value = func(self._p.readUserDebugParameter(param["id"]))
+    #         cur_value = getattr(*param["dest"], param["default"])
+    #         if cur_value != value:
+    #             setattr(*param["dest"], value)
+    #             if "post" in param:
+    #                 post_func = param["post"]
+    #                 post_func()
+
     def _handle_parameter_update(self):
-        for param in self.parameters:
-            func = param["func"]
-            value = func(self._p.readUserDebugParameter(param["id"]))
-            cur_value = getattr(*param["dest"], param["default"])
-            if cur_value != value:
-                setattr(*param["dest"], value)
-                if "post" in param:
-                    post_func = param["post"]
-                    post_func()
+        # Headless/DIRECT: no user debug params exist
+        if not getattr(self, "has_gui", False):
+            return
+        if not hasattr(self, "parameters"):
+            return
 
     def _handle_mouse_press(self):
         events = self._p.getMouseEvents()

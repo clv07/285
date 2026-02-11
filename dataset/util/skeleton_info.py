@@ -254,7 +254,9 @@ t2m_raw_offsets = [[0,0,0],
 
 skel_dict = {
             'STYLE100':{'end_eff':STYLE100_end_eff, 'num_joint':23, 'euler_rotate_order':'YXZ', 'head_idx':[5,6], 'hand_idx':[10,14],'foot_idx':[17,18,21,22], 'toe_idx':[18,22],'fps':30,'unit':'meter', 'st_angle_offset':90},
-            'LAFAN1':{'end_eff':LAFAN1_end_eff,  'num_joint':22, 'euler_rotate_order':'ZYX', 'head_idx':[12,13],'hand_idx':[17,21],'foot_idx':[3,4,7,8],  'toe_idx':[4,8], 'fps':60, 'unit':'meter','st_angle_offset':-180, 'transmap':LAFAN1_transmap, 'rev_transmap':LAFAN1_rev_transmap},
+            'LAFAN1':{
+              'links': LAFAN1_links,
+              'end_eff':LAFAN1_end_eff,  'num_joint':22, 'euler_rotate_order':'ZYX', 'head_idx':[12,13],'hand_idx':[17,21],'foot_idx':[3,4,7,8],  'toe_idx':[4,8], 'fps':60, 'unit':'meter','st_angle_offset':-180, 'transmap':LAFAN1_transmap, 'rev_transmap':LAFAN1_rev_transmap},
             'AMASS':{'offset_joint':SMPL_joint_offset,'links': SMPL_links, 'name_joint':SMPL_name_joint, 'end_eff':SMPL_end_eff,  'num_joint':22, 'euler_rotate_order':'ZYX', 'root_idx':0,  'head_idx':[12,15], 'hand_idx':[20,21], 'foot_idx':[7,8,10,11], 'fps':30, 'toe_idx':[10,11],'st_angle_offset':90, 'unit':'cm'},
             'HumanML3D':{'offset_joint':SMPL_joint_offset, 'links': SMPL_links, 'name_joint':SMPL_name_joint, 'end_eff':SMPL_end_eff, 'num_joint':22, 'euler_rotate_order':'ZYX','root_idx':0,  'head_idx':[12,15], 'hand_idx':[20,21], 'foot_idx':[7,8,10,11], 'fps':30, 'toe_idx':[10,11],'st_angle_offset':90, 'unit':'cm'}
             }

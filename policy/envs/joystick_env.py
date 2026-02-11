@@ -29,6 +29,7 @@ class JoystickEnv(target_env.TargetEnv):
         self.target_direction_buf = torch.zeros((self.num_parallel, 1)).to(self.device)
         self.target_speed_buf = torch.zeros((self.num_parallel, 1)).to(self.device)
         self.joystick_arr = torch.zeros((self.num_parallel, self.max_timestep, 2)) 
+        
 
 
     def reset_target(self, indices=None, location=None):
@@ -75,8 +76,11 @@ class JoystickEnv(target_env.TargetEnv):
                 self.target_direction = -np.pi/3
             #self.target_direction -= np.pi/2
             self.target.copy_(self.root_xz)
-            self.joystick_arr[:,self.timestep,0] = self.target_speed 
-            self.joystick_arr[:,self.timestep,1] = self.target_direction 
+            # self.joystick_arr[:,self.timestep,0] = self.target_speed 
+            # self.joystick_arr[:,self.timestep,1] = self.target_direction 
+
+            self.joystick_arr[:,self.timestep.long(),0] = self.target_speed 
+            self.joystick_arr[:,self.timestep.long(),1] = self.target_direction
 
             if self.timestep % 30 ==0:
                 np.save(osp.join(self.int_output_dir,'joystick'), self.joystick_arr[:,:self.timestep])
@@ -169,7 +173,7 @@ class JoystickEnv(target_env.TargetEnv):
             self.reward.add_(progress)
 
         obs_components = list(self.get_observation_components())
-        self.done.fill_(self.timestep >= self.max_timestep)
+        self.done.fill_(float(self.timestep >= self.max_timestep))
         obs_components[0] = obs_components[0].squeeze(1)
         
         # Everytime this function is called, should call render

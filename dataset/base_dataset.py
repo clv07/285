@@ -27,6 +27,8 @@ class BaseMotionData(data.Dataset):
         self.links = self.skel_info.get("links",None)
         self.joint_names = self.skel_info.get("name_joint",None)
         self.end_eff = self.skel_info.get("end_eff",None)
+
+        
         self.joint_offset = self.skel_info.get("offset_joint",None)
 
         self.root_idx = self.skel_info.get("root_idx",None)
@@ -133,8 +135,8 @@ class BaseMotionData(data.Dataset):
                     self.valid_range = data['valid_range']
                     self.file_lst = data['file_lst']
                 
-                if 'labels' in data.keys():
-                    self.labels= data['labels']
+                    if 'labels' in data.keys():
+                        self.labels= data['labels']
                 
             else:
                 file_paths = self.get_motion_fpaths()
@@ -142,6 +144,7 @@ class BaseMotionData(data.Dataset):
                 self.total_len = 0
                 self.motion_struct = None
                 
+                self.joint_offset = []
                 for i, fname in enumerate(tqdm.tqdm(file_paths)):
                     ret = self.process_data(fname)
                     if ret is None:
@@ -153,9 +156,19 @@ class BaseMotionData(data.Dataset):
                         if self.motion_struct is None:
                             self.motion_struct = motion_struct
 
-                        if self.use_offset is None:
-                            self.joint_offset =  motion_struct._skeleton.get_joint_offset()
+                        # if self.use_offset is None:
+                        #     self.joint_offset =  motion_struct._skeleton.get_joint_offset()
+                        # else:
+                        #     offset = motion_struct._skeleton.get_joint_offset()
+                        #     self.joint_offset.append(offset)
+
+                        # FIX 2 (lines ~156–162): correct condition and keep types consistent
+                        if not self.use_offset:
+                            # store a single skeleton offset for the dataset
+                            if len(self.joint_offset) == 0:
+                                self.joint_offset = motion_struct._skeleton.get_joint_offset()
                         else:
+                            # store one offset per clip
                             offset = motion_struct._skeleton.get_joint_offset()
                             self.joint_offset.append(offset)
 
@@ -592,7 +605,9 @@ class BaseMotionData(data.Dataset):
         else:
             joint_offset = self.joint_offset
         #joint_offset = joint_offset[None,...].repeat(joint_orientations.shape[0],0)
-        
+          
+        joint_offset = joint_offset.reshape(-1, 3)
+
         for i in range(self.num_jnt):
             local_rotation = ang_frames[:, self.data_rot_dim*i: self.data_rot_dim*(i+1)]
             local_rotation = self.from_rpr_to_rotmat(torch.tensor(local_rotation)).numpy()
