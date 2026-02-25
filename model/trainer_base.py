@@ -2,6 +2,7 @@ import abc
 import copy
 import numpy as np
 from collections import defaultdict
+from tqdm import tqdm
 
 import torch
 import torch.optim as optim
@@ -111,7 +112,7 @@ class BaseTrainer():
         n_total = len(self.dataset.test_valid_idx)
     
         # Tune these
-        B_eval = 6                 # clips per batch
+        B_eval = 1000                # clips per batch
         #do_long = False             # turn on sparingly
         long_T = 1000
         long_K = 3
@@ -129,14 +130,16 @@ class BaseTrainer():
     
                 # x: (B, K, T, D)
                 x = model.eval_seq(start_x, None, self.test_num_steps, self.test_num_trials)
+                x_long = model.eval_seq(start_x, None, long_T, long_K)  # (1, Klong, Tlong, D)
     
                 # NaN accounting per-clip
                 bad_clip = torch.isnan(x).flatten(start_dim=1).any(dim=1)  # (B,)
                 NaN_clip_num += int(bad_clip.sum().item())
     
                 x_np = x.detach().cpu().numpy()  # (B,K,T,D)
+                x_long_np = x_long.detach().cpu().numpy()
     
-                for bi in range(B):
+                for bi in tqdm(range(B)):
                     st_idx = st_idx_batch[bi]
                     ref_clip = ref_clip_batch[bi]  # (T,D)
     
@@ -164,9 +167,9 @@ class BaseTrainer():
     
                     # Optional long-horizon
                     # if do_long:
-                    x_long = model.eval_seq(start_x[bi:bi+1], None, long_T, long_K)  # (1, Klong, Tlong, D)
-                    x_long_np = x_long.detach().cpu().numpy()[0]
-                    den_long = self.dataset.denorm_data(x_long_np)
+
+                   
+                    den_long = self.dataset.denorm_data(x_long_np[bi])
                     out_long = self.dataset.x_to_jnts_batched(den_long, mode=mode0)
 
                     long_stats = compute_long_test_metrics(
