@@ -58,8 +58,8 @@ def build_dataset(config, load_full_dataset):
     dataset = dataset_builder.build_dataset(config, load_full_dataset)
     return dataset
 
-def evaluate(trainer, model):
-    result = trainer.evaluate_offline(model)
+def evaluate(trainer, model, int_output_dir):
+    result = trainer.evaluate(-1, model, int_output_dir)
     return result
 
 def create_output_dirs(out_model_file, int_output_dir):
@@ -96,13 +96,13 @@ def run(rank, num_procs, args):
     
     trainer = build_trainer(model_config_file, device)
     model = build_model(model_config_file, trainer.dataset, device)
-    dataset = build_dataset(model_config_file, load_full_dataset = True)
     if (trained_model_path != ""):
         try:
-            model = model_builder.build_model(model_config_file, dataset, device)
+            model = model_builder.build_model(model_config_file, trainer.dataset, device)
             state_dict = torch.load(trained_model_path)
             model.load_state_dict(state_dict)
-        except:
+        except Exception as e:
+            print(Exception)
             model = torch.load(trained_model_path)
         
         model.to(device)
@@ -114,7 +114,7 @@ def run(rank, num_procs, args):
               int_output_dir=int_output_dir, log_file=log_file)
             
     elif (mode == "eval"):
-        stats = evaluate(trainer, model, device=device)
+        stats = evaluate(trainer, model, int_output_dir)
         return stats
     
     else:

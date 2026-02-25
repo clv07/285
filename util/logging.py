@@ -25,8 +25,8 @@ class CSVLogger(object):
         self.csvfile.close()
 
 class wandbLogger(object):
-    def __init__(self, run_name, proj_name):
-        wandb.init(project=proj_name, name=run_name)
+    def __init__(self, run_name, proj_name, config):
+        wandb.init(project=proj_name, name=run_name, config=config)
         self.run_name = wandb.run.name
 
     def is_root(self):
