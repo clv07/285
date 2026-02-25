@@ -723,6 +723,121 @@ class BaseMotionData(data.Dataset):
             dpm_lst[i,:] = copy.deepcopy(dpm)
             jnts[i,:,:] = np.dot(jnts[i,:,:], geo_util.rot_yaw(yaws[i])) + copy.deepcopy(dpm)
         return jnts
+
+    def x_to_jnts_batched(self, x, mode):
+        """
+        Batched version of x_to_jnts.
+    
+        Args:
+            x: numpy array of shape (T, D) or (K, T, D)
+            mode: same as x_to_jnts ('angle', 'position', 'velocity', 'ik_fk', ...)
+    
+        Returns:
+            jnts: numpy array of shape (T, J, 3) or (K, T, J, 3)
+        """
+        # ---- normalize input shape to (K, T, D) ----
+        x_in = x
+        squeeze_back = False
+        if x_in.ndim == 2:
+            x_in = x_in[None, ...]  # (1, T, D)
+            squeeze_back = True
+        elif x_in.ndim != 3:
+            raise ValueError(f"x_to_jnts_batched expects (T,D) or (K,T,D), got shape {x_in.shape}")
+    
+        K, T, D = x_in.shape
+    
+        # Work on a copy so we don't mutate caller's array
+        x_work = x_in.copy()
+    
+        # ---- root deltas / heading deltas (batched) ----
+        dxdy = x_work[..., :self.data_root_linear_dim]  # (K, T, 2) typically
+    
+        if self.data_root_rot_dim > 1:
+            m6d = self.from_rpr_to_rotmat(x_work[..., self.data_root_linear_dim:self.data_root_dim])
+            dr, _ = geo_util.sepr_rot_heading(m6d)
+            if torch.is_tensor(dr):
+                dr = dr.detach().cpu().numpy()
+            else:
+                dr = np.asarray(dr)
+        else:
+            dr = x_work[..., self.data_root_linear_dim]
+            if torch.is_tensor(dr):
+                dr = dr.detach().cpu().numpy()
+            else:
+                dr = np.asarray(dr)
+    
+        # Ensure dr is (K,T)
+        dr = dr.reshape(K, T)
+    
+        # ---- local joints per sequence (still loops over K, but no loop over T for globalization) ----
+        local_jnts_list = []
+        for k in range(K):
+            xk = x_work[k].copy()  # preserve semantics of in-place zeroing inside each mode
+    
+            if mode == 'angle':
+                jnts_local = self.fk_local_seq(xk)
+    
+            elif mode == 'position':
+                xk[..., [self.joint_dim_lst[0], self.joint_dim_lst[0] + 2]] *= 0
+                jnts_local = self.jnts_step_seq(xk)
+    
+            elif mode == 'velocity':
+                xk[..., [self.joint_dim_lst[0], self.joint_dim_lst[0] + 2]] *= 0
+                xk[..., [self.vel_dim_lst[0], self.vel_dim_lst[0] + 2]] *= 0
+                jnts_local = self.vel_step_seq(xk)
+    
+            elif mode == 'ik_fk':
+                # keep exact existing behavior, just per-sequence
+                rotations = self.ik_seq_slow(xk[0], xk[1:])
+                xk[1:, self.angle_dim_lst[0]:self.angle_dim_lst[1]] = rotations.reshape(
+                    -1, self.data_rot_dim * self.num_jnt
+                )
+                jnts_local = self.fk_local_seq(xk)
+    
+            else:
+                xk[..., [self.joint_dim_lst[0], self.joint_dim_lst[0] + 2]] *= 0
+                jnts_local = self.jnts_step_seq(xk)
+    
+            local_jnts_list.append(jnts_local)
+    
+        jnts_local = np.stack(local_jnts_list, axis=0)  # (K, T, J, 3)
+        out_dtype = jnts_local.dtype
+    
+        # ---- vectorized globalization (replaces your for i in range(1, T) loop) ----
+        # yaws = cumulative heading, same wrap logic as current code
+        yaws = np.cumsum(dr, axis=1)
+        yaws = yaws - (yaws // (np.pi * 2)) * (np.pi * 2)
+    
+        # Build rotation matrices per (k,t) using your existing geo_util.rot_yaw (preserves convention)
+        yaws_flat = yaws.reshape(-1)
+        rot_flat = np.stack([geo_util.rot_yaw(float(a)) for a in yaws_flat], axis=0)  # (K*T, 3, 3)
+        rotmats = rot_flat.reshape(K, T, 3, 3).astype(out_dtype, copy=False)
+    
+        # Frame 0 is untouched in your original code (loop starts at i=1)
+        eye3 = np.eye(3, dtype=out_dtype)
+        rotmats[:, 0, :, :] = eye3
+    
+        # Per-frame root displacement vectors in local frame: [dx, 0, dy]
+        step_local = np.zeros((K, T, 3), dtype=out_dtype)
+        step_local[..., 0] = dxdy[..., 0]
+        step_local[..., 2] = dxdy[..., 1]
+        step_local[:, 0, :] = 0  # match original behavior (no update at i=0)
+    
+        # Rotate displacement into world using row-vector convention:
+        # np.dot(cur_pos, rot_yaw(yaw))  ==> einsum('...c,...cd->...d')
+        step_world = np.einsum('ktc,ktcd->ktd', step_local, rotmats)  # (K, T, 3)
+    
+        # Cumulative world translation dpm (same as repeated dpm += ...)
+        dpm_lst = np.cumsum(step_world, axis=1)  # (K, T, 3)
+    
+        # Rotate joints into world and add translation
+        # np.dot(jnts[i,:,:], rot_yaw(yaw[i])) + dpm
+        jnts_world = np.einsum('ktjc,ktcd->ktjd', jnts_local, rotmats)
+        jnts_world = jnts_world + dpm_lst[:, :, None, :]
+    
+        if squeeze_back:
+            return jnts_world[0]
+        return jnts_world
         
     def x_to_trajs(self,x):
         dxdy = x[...,:self.data_root_linear_dim] 

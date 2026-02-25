@@ -1,6 +1,7 @@
 import abc
 import copy
 import numpy as np
+from collections import defaultdict
 
 import torch
 import torch.optim as optim
@@ -10,6 +11,7 @@ from torch.utils.data import DataLoader
 import util.vis_util as vis_util
 import util.logging as logging_util
 import util.save as save_util
+from util.eval import compute_test_metrics, compute_long_test_metrics
 import yaml
 
 class BaseTrainer():
@@ -90,8 +92,8 @@ class BaseTrainer():
                 continue
             if ep % self.test_interval == 0:
                 num_nans = self.evaluate(ep, model, int_output_dir)
-                save_util.save_weight(model, int_output_dir+'_ep{}.pth'.format(ep))
-                save_util.save_weight(model, out_model_file)
+                # save_util.save_weight(model, int_output_dir+'_ep{}.pth'.format(ep))
+                # save_util.save_weight(model, out_model_file)
                 
             self.logger.log_epoch(loss_stats)
             self.logger.print_log(loss_stats)
@@ -101,88 +103,88 @@ class BaseTrainer():
     def evaluate(self, ep, model, result_ouput_dir):
         model.eval()
         NaN_clip_num = 0
+    
+        stats_dict = defaultdict(float)
+        long_stats_dict = defaultdict(float)
+    
+        mode0 = self.dataset.data_component[0]
+        n_total = len(self.dataset.test_valid_idx)
+    
+        # Tune these
+        B_eval = 6                 # clips per batch
+        #do_long = False             # turn on sparingly
+        long_T = 1000
+        long_K = 3
+    
+        with torch.inference_mode():
+            for b0 in range(0, n_total, B_eval):
+                b1 = min(b0 + B_eval, n_total)
+                B = b1 - b0
+    
+                st_idx_batch = self.dataset.test_valid_idx[b0:b1]
+                ref_clip_batch = self.dataset.test_ref_clips[b0:b1]
+    
+                # start_x: (B, D)
+                start_x = torch.from_numpy(np.stack([rc[0] for rc in ref_clip_batch], axis=0)).float().to(self.device)
+    
+                # x: (B, K, T, D)
+                x = model.eval_seq(start_x, None, self.test_num_steps, self.test_num_trials)
+    
+                # NaN accounting per-clip
+                bad_clip = torch.isnan(x).flatten(start_dim=1).any(dim=1)  # (B,)
+                NaN_clip_num += int(bad_clip.sum().item())
+    
+                x_np = x.detach().cpu().numpy()  # (B,K,T,D)
+    
+                for bi in range(B):
+                    st_idx = st_idx_batch[bi]
+                    ref_clip = ref_clip_batch[bi]  # (T,D)
+    
+                    # GT joints once
+                    ref_jnts = self.dataset.x_to_jnts(
+                        self.dataset.denorm_data(ref_clip.copy()),
+                        mode=mode0
+                    )  # (T,J,3)
+    
+                    # Denorm all trials at once: (K,T,D)
+                    den = self.dataset.denorm_data(x_np[bi])  # uses numpy broadcasting
+    
+                    # Batched joints: (K,T,J,3)
+                    output_jnts = self.dataset.x_to_jnts_batched(den, mode=mode0)
+    
+                    stats = compute_test_metrics(
+                        links=self.dataset.links,
+                        foot_idx=self.dataset.foot_idx,
+                        output_jnts=output_jnts,
+                        ref_jnts=ref_jnts,
+                    )
+    
+                    for k, v in stats.items():
+                        stats_dict[k] += float(v)
+    
+                    # Optional long-horizon
+                    # if do_long:
+                    x_long = model.eval_seq(start_x[bi:bi+1], None, long_T, long_K)  # (1, Klong, Tlong, D)
+                    x_long_np = x_long.detach().cpu().numpy()[0]
+                    den_long = self.dataset.denorm_data(x_long_np)
+                    out_long = self.dataset.x_to_jnts_batched(den_long, mode=mode0)
 
-        for idx, (st_idx, ref_clip) in enumerate(zip(self.dataset.test_valid_idx, self.dataset.test_ref_clips)):
-            print('Eval Index:',st_idx)
-            test_out_lst = []
-            test_local_out_lst = []
-
-            start_x = torch.from_numpy(ref_clip[0]).float().to(self.device)
-            
-            if ep == 0:
-                model_lst = self.dataset.data_component           
-                cur_jnts = []
-                for mode in model_lst:
-                    jnts_mode = self.dataset.x_to_jnts(self.dataset.denorm_data(ref_clip), mode=mode)
-                    cur_jnts.append(jnts_mode)
-                cur_jnts = np.array(cur_jnts)
-
-                self.plot_jnts_fn(cur_jnts.squeeze(), result_ouput_dir+'/gt_{}'.format(st_idx))
-                ref_clip = cur_jnts[[0],...]
-            else:
-                ref_clip = self.dataset.x_to_jnts(self.dataset.denorm_data(ref_clip), mode=self.dataset.data_component[0])[None,...]
-            
-            ref_local_clip = ref_clip - ref_clip[:,:,[0],:]
-
-            test_out_lst.append(ref_clip.squeeze())
-            test_data = model.eval_seq(start_x, None, self.test_num_steps, self.test_num_trials)
-            test_data_long = model.eval_seq(start_x, None, 1000, 3)
-
-            num_all = torch.numel(test_data)
-            num_nans = torch.sum(torch.isnan(test_data))
-
-            num_all_long = torch.numel(test_data_long)
-            num_nans_long = torch.sum(torch.isnan(test_data_long))
-        
-            print('percent of nan frames : {}'.format(num_nans*1.0/num_all))
-            print('percent of nan frames for long horizon gen : {}'.format(num_nans_long*1.0/num_all_long))
-            should_plot = True
-            if num_nans > 0:
-                NaN_clip_num += 1
-                should_plot = False
-                #print('skip calc stats {} to save time'.format(st_idx))
-                #if False:#NaN_clip_num >= len(self.dataset.test_valid_idx)-1:
-                #continue # skip calc stats to save time
-                        
-            test_data = test_data.detach().cpu().numpy()
-
-            for i in range(test_data.shape[0]):
-                cur_denormed_test_data = self.dataset.denorm_data(copy.deepcopy(test_data[i]))
-                cur_jnts = []
-               
-                for mode in self.dataset.data_component:
-                    jnts_mode = self.dataset.x_to_jnts(cur_denormed_test_data, mode = mode)
-                    cur_jnts.append(jnts_mode)
-
-                    if mode == self.dataset.data_component[0]:
-                        test_out_lst.append(jnts_mode)
-                        jnts_mode_local = jnts_mode - jnts_mode[:,[0],:]  
-                        test_local_out_lst.append(jnts_mode_local)
-                cur_jnts = np.array(cur_jnts)
-                if should_plot:
-                    self.plot_jnts_fn(cur_jnts.squeeze(), result_ouput_dir+'/{}_{}'.format(st_idx,i))
-            test_out_lst = np.array(test_out_lst)
-            self.plot_traj_fn(test_out_lst, result_ouput_dir+'/{}'.format(st_idx))
-            
-            test_data_long = test_data_long.detach().cpu().numpy()
-            test_out_long_lst = []
-            for i in range(test_data_long.shape[0]):
-                cur_denormed_test_data = self.dataset.denorm_data(copy.deepcopy(test_data_long[i]))
-                cur_jnts = []
-               
-                for mode in self.dataset.data_component:
-                    jnts_mode = self.dataset.x_to_jnts(cur_denormed_test_data, mode = mode)
-                    cur_jnts.append(jnts_mode)
-
-                    if mode == self.dataset.data_component[0]:
-                        test_out_long_lst.append(jnts_mode)
-                        jnts_mode_local = jnts_mode - jnts_mode[:,[0],:]  
-                cur_jnts = np.array(cur_jnts)
-              
-            test_out_long_lst = np.array(test_out_long_lst)
-            self.plot_traj_fn(test_out_long_lst, result_ouput_dir+'/{}_long'.format(st_idx))
-            
-
-
-
+                    long_stats = compute_long_test_metrics(
+                        links=self.dataset.links,
+                        foot_idx=self.dataset.foot_idx,
+                        output_jnts=out_long,
+                        ref_jnts=ref_jnts,
+                    )
+                    for k, v in long_stats.items():
+                        long_stats_dict[k] += float(v)
+    
+        # Average + log
+        n = float(n_total)
+        stats_dict = {k: v / n for k, v in stats_dict.items()}
+        self.logger.log_epoch(stats_dict)
+    
+        # if do_long:
+        long_stats_dict = {f"long/{k}": (v / n) for k, v in long_stats_dict.items()}
+        self.logger.log_epoch(long_stats_dict)
+    
         return NaN_clip_num

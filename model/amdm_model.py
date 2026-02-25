@@ -80,30 +80,40 @@ class AMDM(model_base.BaseModel):
 
     
     def eval_seq(self, start_x, extra_dict, num_steps, num_trials, align_rpr=False, record_process=False):
-
-        if len(start_x.shape)<=1:
-            start_x = start_x[None,:]
-        
-        if start_x.shape[0] == 1:
-            start_x = start_x.expand(num_trials, -1)
-        else:
-            print('overwrite num of trial with actual batch size of start_x')
-            num_trials = start_x.shape[0]
-        
+        """
+        start_x: (D,) or (B,D)
+        returns:
+          if not record_process: (B,K,T,D)
+          else: (B,K,T,self.T,D)  # matching your original semantics
+        """
+        if len(start_x.shape) == 1:
+            start_x = start_x[None, :]  # (1,D)
+    
+        B, D = start_x.shape
+        K = num_trials
+    
+        # Expand to (B,K,D) then flatten to (B*K,D)
+        x = start_x[:, None, :].expand(B, K, D).reshape(B * K, D)
+    
         if record_process:
-            output_xs = torch.zeros((num_trials, num_steps, self.T, self.frame_dim)).to(self.device)
+            output_xs = torch.zeros((B * K, num_steps, self.T, self.frame_dim), device=self.device, dtype=x.dtype)
         else:
-            output_xs = torch.zeros((num_trials, num_steps, self.frame_dim)).to(self.device)
-
-        for j in range(num_steps):
-            with torch.no_grad():
-                start_x = self.eval_step(start_x, extra_dict, align_rpr, record_process).detach()
-            output_xs[:,j,...] = start_x 
-            
-            if record_process:
-                start_x= start_x[...,-1,:]
-
-        return output_xs
+            output_xs = torch.zeros((B * K, num_steps, self.frame_dim), device=self.device, dtype=x.dtype)
+    
+        with torch.inference_mode():
+            for j in range(num_steps):
+                x = self.eval_step(x, extra_dict, align_rpr, record_process)
+    
+                output_xs[:, j, ...] = x
+    
+                if record_process:
+                    x = x[..., -1, :]
+    
+        # Reshape back to (B,K, ...)
+        if record_process:
+            return output_xs.reshape(B, K, num_steps, self.T, self.frame_dim)
+        else:
+            return output_xs.reshape(B, K, num_steps, self.frame_dim)
 
     def eval_step_interactive(self, cur_x, edited_mask, edit_data, extra_dict): 
         diffusion = self.ema_diffusion if self.use_ema else self.diffusion

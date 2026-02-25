@@ -99,7 +99,7 @@ def compute_rigid_diff(links, output_seqs, ref_lengths):
     link_dist = np.abs(output_lengths - ref_lengths[...,None])
     return link_dist
 
-
+'''
 def compute_foot_slide(foot_idx, output_seqs):
     contact_threshold = 0.3 #* 1 / 0.3048 
     output_seqs = output_seqs[..., foot_idx,:]
@@ -117,7 +117,34 @@ def compute_foot_slide(foot_idx, output_seqs):
         foot_slide_lst[:,i] = foot_slide
 
     return np.mean(foot_slide_lst)
+'''
+def compute_foot_slide(foot_idx, output_seqs):
+    contact_threshold = 0.3
 
+    # keep only foot joints: (..., T, F, 3), where F=len(foot_idx) (often 4)
+    seq = output_seqs[..., foot_idx, :]
+
+    # per-step displacement in xz plane: (..., T-1, F)
+    d = seq[..., 1:, :, :] - seq[..., :-1, :, :]
+    dxdy = np.linalg.norm(d[..., [0, 2]], axis=-1)
+
+    # heights for contact gating: (..., T-1, F)
+    z = seq[..., 1:, :, 1]
+
+    # expect F=4 -> reshape to (..., T-1, 2, 2)
+    # (2 feet) x (2 joints per foot) convention
+    z = z.reshape(*z.shape[:-1], 2, 2)
+
+    # pick the 2 joints you want for sliding distance (indices 1 and 3 in the original F=4 layout)
+    # -> (..., T-1, 2)
+    dxdy_pair = dxdy[..., [1, 3]]
+
+    # contact factor based on max height within each foot’s 2 joints: (..., T-1, 2)
+    zmax = np.max(z, axis=-1)
+    factor = 2 - 2 ** np.clip((zmax / contact_threshold), 0, 1)
+
+    foot_slide = dxdy_pair * factor  # (..., T-1, 2)
+    return float(np.mean(foot_slide))
 
 def compute_jittering(output_seqs):
     a_seqs = np.diff(output_seqs, n=2, axis=-1)
@@ -128,12 +155,16 @@ def compute_jittering(output_seqs):
 def compute_long_test_metrics(links, foot_idx, output_jnts, ref_jnts):
     ref_lengths = extract_sk_lengths(links, ref_jnts).mean(axis=-1)
     foot_slide = compute_foot_slide(foot_idx, output_jnts)
-    jittering = compute_jittering(output_jnts)
-    rigid = compute_rigid_diff(links, output_jnts, ref_lengths)
+    #jittering = compute_jittering(output_jnts)
+    #rigid = compute_rigid_diff(links, output_jnts, ref_lengths)
+    jittering = float(np.mean(compute_jittering(output_jnts)))
+    rigid = float(np.mean(compute_rigid_diff(links, output_jnts, ref_lengths)))
+    jittering_gt = float(np.mean(compute_jittering(ref_jnts)))
     stats = {
         'sliding':foot_slide,
         'jittering': jittering,
-        'rigid':rigid
+        'rigid':rigid,
+        'jittering_gt':jittering_gt
     }
     return stats
 
@@ -159,12 +190,15 @@ def compute_local_test_metrics(links, output_jnts, ref_jnts):
 def compute_test_metrics(links, foot_idx, output_jnts, ref_jnts):        
     ref_lengths = extract_sk_lengths(links, ref_jnts).mean(axis=-1)
     slide_gt = compute_foot_slide(foot_idx, ref_jnts)
-    jittering_gt = compute_jittering(ref_jnts)
+    #jittering_gt = compute_jittering(ref_jnts)
     apd = compute_apd(output_jnts)
     ade, fde = compute_ade(output_jnts, ref_jnts)
     foot_slide = compute_foot_slide(foot_idx, output_jnts)
-    jittering = compute_jittering(output_jnts)
-    rigid = compute_rigid_diff(links, output_jnts, ref_lengths)
+    #jittering = compute_jittering(output_jnts)
+    #rigid = compute_rigid_diff(links, output_jnts, ref_lengths)
+    jittering = float(np.mean(compute_jittering(output_jnts)))
+    rigid = float(np.mean(compute_rigid_diff(links, output_jnts, ref_lengths)))
+    jittering_gt = float(np.mean(compute_jittering(ref_jnts)))
 
     stats = {
         'apd':apd,
