@@ -185,8 +185,8 @@ class BaseTrainer():
         # Tune these
         B_eval = 1000                # clips per batch
         #do_long = False             # turn on sparingly
-        long_T = 1000
-        long_K = 10
+        long_T = 100
+        long_K = 1
         crps_sum = {}
         crps_cnt = {}
     
@@ -232,7 +232,7 @@ class BaseTrainer():
                         crps_sum, crps_cnt,
                         output_jnts=output_jnts,
                         ref_jnts=ref_jnts,
-                        step=50,
+                        step=5,
                         prefix="val"
                     )
     

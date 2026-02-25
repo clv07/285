@@ -55,6 +55,6 @@ data:
 
 test:
     test_interval: 5
-    test_num_steps: 1000
-    test_num_trials: 10
-    test_num_init_frame: 20
+    test_num_steps: 50
+    test_num_trials: 20
+    test_num_init_frame: 200
