@@ -15,6 +15,77 @@ import util.save as save_util
 from util.eval import compute_test_metrics, compute_long_test_metrics
 import yaml
 
+import numpy as np
+
+
+def _crps_ensemble_np(samples: np.ndarray, y: float = 0.0) -> np.ndarray:
+    """
+    Empirical CRPS for an ensemble.
+
+    samples: (..., K)
+    y: scalar observation (use y=0 if samples are errors)
+    returns: (...) CRPS
+
+    CRPS = E|X-y| - 0.5 E|X-X'|
+    """
+    samples = np.asarray(samples)
+    term1 = np.mean(np.abs(samples - y), axis=-1)  # (...,)
+
+    diffs = np.abs(samples[..., :, None] - samples[..., None, :])  # (...,K,K)
+    term2 = 0.5 * np.mean(diffs, axis=(-1, -2))                    # (...,)
+
+    return term1 - term2
+
+
+def _per_timestep_jointpos_err_np(output_jnts: np.ndarray, ref_jnts: np.ndarray) -> np.ndarray:
+    """
+    output_jnts: (K,T,J,3)
+    ref_jnts:    (T,J,3)
+    returns:     (T,K) where entry (t,k) is mean_j ||pred-ref||_2 at timestep t
+    """
+    diff = output_jnts - ref_jnts[None, ...]        # (K,T,J,3)
+    dist = np.linalg.norm(diff, axis=-1)            # (K,T,J)
+    err = dist.mean(axis=-1)                        # (K,T)
+    return np.transpose(err, (1, 0))                # (T,K)
+
+
+def update_val_crps_running(
+    crps_sum: dict,
+    crps_cnt: dict,
+    output_jnts: np.ndarray,
+    ref_jnts: np.ndarray,
+    step: int = 10,
+    prefix: str = "val",
+):
+    """
+    Accumulate CRPS at timesteps 0, step, 2*step, ... for a single clip.
+
+    crps_sum/crps_cnt: running accumulators keyed by f"{prefix}/T{t}/CRPS"
+    output_jnts: (K,T,J,3)
+    ref_jnts:    (T,J,3)
+    """
+    err_tk = _per_timestep_jointpos_err_np(output_jnts, ref_jnts)  # (T,K)
+    T = err_tk.shape[0]
+
+    for t in range(0, T, step):
+        v = float(_crps_ensemble_np(err_tk[t], y=0.0))
+        if np.isfinite(v):
+            key = f"{prefix}/T{t}/CRPS"
+            crps_sum[key] = crps_sum.get(key, 0.0) + v
+            crps_cnt[key] = crps_cnt.get(key, 0.0) + 1.0
+
+
+def finalize_crps_log(crps_sum: dict, crps_cnt: dict) -> dict:
+    """
+    Convert running sums/counts into mean CRPS values ready for logger.log_epoch().
+    """
+    out = {}
+    for k, s in crps_sum.items():
+        c = crps_cnt.get(k, 0.0)
+        if c > 0:
+            out[k] = s / c
+    return out
+
 class BaseTrainer():
     def __init__(self, config, dataset, device):
         self.config = config
@@ -115,7 +186,9 @@ class BaseTrainer():
         B_eval = 1000                # clips per batch
         #do_long = False             # turn on sparingly
         long_T = 1000
-        long_K = 3
+        long_K = 10
+        crps_sum = {}
+        crps_cnt = {}
     
         with torch.inference_mode():
             for b0 in range(0, n_total, B_eval):
@@ -154,6 +227,14 @@ class BaseTrainer():
     
                     # Batched joints: (K,T,J,3)
                     output_jnts = self.dataset.x_to_jnts_batched(den, mode=mode0)
+
+                    update_val_crps_running(
+                        crps_sum, crps_cnt,
+                        output_jnts=output_jnts,
+                        ref_jnts=ref_jnts,
+                        step=50,
+                        prefix="val"
+                    )
     
                     stats = compute_test_metrics(
                         links=self.dataset.links,
@@ -185,6 +266,7 @@ class BaseTrainer():
         n = float(n_total)
         stats_dict = {k: v / n for k, v in stats_dict.items()}
         self.logger.log_epoch(stats_dict)
+        self.logger.log_epoch(finalize_crps_log(crps_sum, crps_cnt))
     
         # if do_long:
         long_stats_dict = {f"long/{k}": (v / n) for k, v in long_stats_dict.items()}

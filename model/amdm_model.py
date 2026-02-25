@@ -2,6 +2,7 @@ import copy
 import numpy as np
 import math
 import torch
+from tqdm import tqdm
 import torch.nn as nn
 import torch.nn.functional as f
 from functools import partial
@@ -101,7 +102,7 @@ class AMDM(model_base.BaseModel):
             output_xs = torch.zeros((B * K, num_steps, self.frame_dim), device=self.device, dtype=x.dtype)
     
         with torch.inference_mode():
-            for j in range(num_steps):
+            for j in tqdm(range(num_steps)):
                 x = self.eval_step(x, extra_dict, align_rpr, record_process)
     
                 output_xs[:, j, ...] = x
