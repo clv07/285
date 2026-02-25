@@ -14,6 +14,7 @@ import util.logging as logging_util
 import util.save as save_util
 from util.eval import compute_test_metrics, compute_long_test_metrics
 import yaml
+import os
 
 import numpy as np
 
@@ -104,6 +105,8 @@ class BaseTrainer():
         self.test_interval = test_config["test_interval"]
         self.test_num_steps = test_config["test_num_steps"]
         self.test_num_trials = test_config["test_num_trials"]
+        self.plot_every_n_test=test_config["plot_every_n_test"]
+        self.save_checkpoint_every_n_test=test_config["save_checkpoint_every_n_test"]
         
         self.frame_dim = dataset.frame_dim
         self.train_dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=True, drop_last=True)
@@ -163,7 +166,7 @@ class BaseTrainer():
             if ep == 0:
                 continue
             if ep % self.test_interval == 0:
-                num_nans = self.evaluate(ep, model, int_output_dir)
+                num_nans = self.evaluate(ep, model, int_output_dir, out_model_file)
                 # save_util.save_weight(model, int_output_dir+'_ep{}.pth'.format(ep))
                 # save_util.save_weight(model, out_model_file)
                 
@@ -172,7 +175,7 @@ class BaseTrainer():
             
         save_util.save_weight(model, out_model_file)
 
-    def evaluate(self, ep, model, result_ouput_dir):
+    def evaluate(self, ep, model, result_ouput_dir, out_model_file):
         model.eval()
         NaN_clip_num = 0
     
@@ -189,6 +192,11 @@ class BaseTrainer():
         long_K = 1
         crps_sum = {}
         crps_cnt = {}
+        do_plot = (ep - self.test_interval) % (self.test_interval * self.plot_every_n_test) == 0
+        save_checkpoint = (ep - self.test_interval) % (self.test_interval * self.save_checkpoint_every_n_test) == 0
+
+        plot_idx = set([0, 15, 56, 70, 95])
+        plot_clips = 3
     
         with torch.inference_mode():
             for b0 in range(0, n_total, B_eval):
@@ -203,14 +211,14 @@ class BaseTrainer():
     
                 # x: (B, K, T, D)
                 x = model.eval_seq(start_x, None, self.test_num_steps, self.test_num_trials)
-                x_long = model.eval_seq(start_x, None, long_T, long_K)  # (1, Klong, Tlong, D)
+                #x_long = model.eval_seq(start_x, None, long_T, long_K)  # (1, Klong, Tlong, D)
     
                 # NaN accounting per-clip
                 bad_clip = torch.isnan(x).flatten(start_dim=1).any(dim=1)  # (B,)
                 NaN_clip_num += int(bad_clip.sum().item())
     
                 x_np = x.detach().cpu().numpy()  # (B,K,T,D)
-                x_long_np = x_long.detach().cpu().numpy()
+                #x_long_np = x_long.detach().cpu().numpy()
     
                 for bi in tqdm(range(B)):
                     st_idx = st_idx_batch[bi]
@@ -245,11 +253,39 @@ class BaseTrainer():
     
                     for k, v in stats.items():
                         stats_dict[k] += float(v)
+                    if do_plot and bi in plot_idx:
+                        # 1) GT joint plot (same behavior as old code)
+                        clip_dir = os.path.join(result_ouput_dir, str(st_idx))
+                        os.makedirs(clip_dir, exist_ok=True)
+                        epoch_dir = os.path.join(clip_dir, str(ep))
+                        os.makedirs(epoch_dir, exist_ok=True)
+                        if ep <= self.test_interval +1:
+                            self.plot_jnts_fn(ref_jnts[None, ...], f"{clip_dir}/gt")  # (1,T,J,3)
+    
+                        # Plot GT + capped predicted trials together (mode0 only)
+                        if not bool(bad_clip[bi].item()):
+                            K_plot = min(output_jnts.shape[0], plot_clips)
+                            out_plot = output_jnts[:K_plot]  # (K_plot,T,J,3)
+                    
+                            jnts_all = np.concatenate([ref_jnts[None, ...], out_plot], axis=0)  # (K_plot+1,T,J,3)
+                            self.plot_jnts_fn(jnts_all, f"{epoch_dir}/gt_plus_{K_plot}_trials_jnts")
+                    
+                            # Optional trajectory plot with same capped set
+                            self.plot_traj_fn(jnts_all, f"{epoch_dir}/traj_{K_plot}")
+    
+                        # 3) Trajectory plot with GT + all generated trials (mode0), like old plot_traj_fn
+                        #    Shape expected: (Ncurves, T, J, 3)
+                        traj_all = [ref_jnts] + [output_jnts[ki] for ki in range(output_jnts.shape[0])]
+                        self.plot_traj_fn(np.array(traj_all), f"{epoch_dir}/traj")
+    
+                        # 4) GT-only trajectory plot saved alongside
+                        self.plot_traj_fn(np.array([ref_jnts]), f"{clip_dir}/gt")
+                    # -------------------------
     
                     # Optional long-horizon
                     # if do_long:
 
-                   
+                    """
                     den_long = self.dataset.denorm_data(x_long_np[bi])
                     out_long = self.dataset.x_to_jnts_batched(den_long, mode=mode0)
 
@@ -261,15 +297,24 @@ class BaseTrainer():
                     )
                     for k, v in long_stats.items():
                         long_stats_dict[k] += float(v)
+                    """
     
         # Average + log
+       
+        
         n = float(n_total)
         stats_dict = {k: v / n for k, v in stats_dict.items()}
         self.logger.log_epoch(stats_dict)
         self.logger.log_epoch(finalize_crps_log(crps_sum, crps_cnt))
-    
+
+        if save_checkpoint:
+            print("saving model checkpoint")
+            # save_util.save_weight(model, result_ouput_dir+'_ep{}.pth'.format(ep))
+            save_util.save_weight(model, out_model_file)
+        """
         # if do_long:
         long_stats_dict = {f"long/{k}": (v / n) for k, v in long_stats_dict.items()}
         self.logger.log_epoch(long_stats_dict)
+        """
     
         return NaN_clip_num

@@ -56,5 +56,7 @@ data:
 test:
     test_interval: 5
     test_num_steps: 50
-    test_num_trials: 20
-    test_num_init_frame: 200
+    test_num_trials: 10
+    test_num_init_frame: 100
+    plot_every_n_test: 4
+    save_checkpoint_every_n_test: 10
