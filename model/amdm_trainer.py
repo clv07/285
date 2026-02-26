@@ -6,8 +6,8 @@ import model.trainer_base as trainer_base
 
 class AMDMTrainer(trainer_base.BaseTrainer):
     NAME = 'AMDM'
-    def __init__(self, config, dataset, device, cnf_file):
-        super(AMDMTrainer, self).__init__(config, dataset, device, cnf_file)
+    def __init__(self, config, dataset, device):
+        super(AMDMTrainer, self).__init__(config, dataset, device)
         optimizer_config = config['optimizer']
         self.full_T = optimizer_config.get('full_T', False)
         self.consistency_on = optimizer_config.get('consistency_on', False)

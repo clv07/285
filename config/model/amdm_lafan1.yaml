@@ -58,8 +58,11 @@ test:
     test_num_steps: 50
     test_num_trials: 10
     test_num_init_frame: 128
-    plot_indices: [0]
+    plot_indices: [0, 25, 50, 75, 100, 125]
     crps_step: 5
     max_plot_traj: 3
     plot_every_n_test: 4
     save_checkpoint_every_n_test: 10
+    single_test: False
+    choose_test_indices: False
+    test_indices: []

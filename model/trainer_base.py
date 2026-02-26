@@ -5,6 +5,7 @@ from collections import defaultdict
 from tqdm import tqdm
 
 import torch
+import wandb
 import torch.optim as optim
 
 from torch.utils.data import DataLoader
@@ -89,12 +90,34 @@ def finalize_crps_log(crps_sum: dict, crps_cnt: dict) -> dict:
             out[k] = s / c
     return out
 
+
+def finalize_crps_pairs(crps_sum: dict, crps_cnt: dict):
+    """
+    Returns list of (lead_time, mean_crps)
+    """
+    pairs = []
+
+    for k, s in crps_sum.items():
+        c = crps_cnt.get(k, 0.0)
+        if c <= 0:
+            continue
+
+        # key format: "val/T{t}/CRPS"
+        # extract t
+        t_str = k.split("/")[1]  # "T{t}"
+        t = int(t_str[1:])
+
+        pairs.append((t, s / c))
+
+    pairs.sort(key=lambda x: x[0])
+    return pairs
+
+
 class BaseTrainer():
-    def __init__(self, config, dataset, device, cnf_file):
+    def __init__(self, config, dataset, device):
         self.config = config
         self.device = device
         self.dataset = dataset
-        self.cf = cnf_file
 
         optimizer_config = config['optimizer']
         self.batch_size = optimizer_config['mini_batch_size']
@@ -193,6 +216,7 @@ class BaseTrainer():
     
         # Tune these
         B_eval = 3000                # clips per batch
+        singular_gif = self.config['test']['single_test']
         #do_long = False             # turn on sparingly
         long_T = 100
         long_K = 1
@@ -265,11 +289,19 @@ class BaseTrainer():
                         os.makedirs(clip_dir, exist_ok=True)
                         epoch_dir = os.path.join(clip_dir, f"epoch_{ep}")
                         os.makedirs(epoch_dir, exist_ok=True)
-                        if ep <= self.test_interval +1:
+                        if ep <= self.test_interval +1 and not singular_gif:
                             self.plot_jnts_fn(ref_jnts[None, ...], f"{clip_dir}/gt")  # (1,T,J,3)
+
+                        if singular_gif:
+                            print("SINGULAR GIF")
+                            K = output_jnts.shape[0]
+                            for ki in range(K):
+                                # Save each trial alone; shape expected: (1,T,J,3)
+                                trial_jnts = output_jnts[ki][None, ...]
+                                self.plot_jnts_fn(trial_jnts, f"{epoch_dir}/trial_{ki:03d}_jnts")
     
                         # Plot GT + capped predicted trials together (mode0 only)
-                        if not bool(bad_clip[bi].item()):
+                        if not bool(bad_clip[bi].item()) and not singular_gif:
                             K_plot = min(output_jnts.shape[0], plot_clips)
                             out_plot = output_jnts[:K_plot]  # (K_plot,T,J,3)
                     
@@ -311,7 +343,19 @@ class BaseTrainer():
         n = float(n_total)
         stats_dict = {k: v / n for k, v in stats_dict.items()}
         self.logger.log_epoch(stats_dict)
-        self.logger.log_epoch(finalize_crps_log(crps_sum, crps_cnt))
+        if ep == -1:
+            crps_pairs = finalize_crps_pairs(crps_sum, crps_cnt)
+        
+            for t, mean_crps in crps_pairs:
+                wandb.log(
+                    {
+                        "val/lead_time": t,
+                        "val/CRPS": mean_crps,
+                        "epoch": ep,
+                    }
+                )
+        else:
+            self.logger.log_epoch(finalize_crps_log(crps_sum, crps_cnt))
 
         if save_checkpoint:
             print("saving model checkpoint")
@@ -322,94 +366,6 @@ class BaseTrainer():
         long_stats_dict = {f"long/{k}": (v / n) for k, v in long_stats_dict.items()}
         self.logger.log_epoch(long_stats_dict)
         """
-        # pick one deterministic test clip
-        # --- DEBUG: compare in-memory vs reloaded weights (diffusion + ema_diffusion) ---
-        # pick one deterministic test clip
-        rc = self.dataset.test_ref_clips[0]
-        start_x = torch.from_numpy(rc[0]).float().to(self.device)[None, :]  # (1,D)
-        
-        with torch.inference_mode():
-            y0 = model.eval_seq(start_x, None, self.test_num_steps, self.test_num_trials)
-        
-        # reload into fresh instance
-        m2 = model_builder.build_model(self.cf, self.dataset, self.device)
-        ckpt = torch.load(out_model_file, map_location=self.device)
-        
-        # robust state extraction
-        if isinstance(ckpt, dict) and "state_dict" in ckpt:
-            sd = ckpt["state_dict"]
-        elif isinstance(ckpt, dict) and all(isinstance(k, str) for k in ckpt.keys()):
-            sd = ckpt
-        else:
-            raise TypeError(f"Unexpected checkpoint type: {type(ckpt)}")
-        
-        # strip DDP prefix if present
-        if any(k.startswith("module.") for k in sd.keys()):
-            sd = {k[len("module."):]: v for k, v in sd.items()}
-        
-        missing, unexpected = m2.load_state_dict(sd, strict=False)
-        print("missing:", missing[:5], "…", len(missing))
-        print("unexpected:", unexpected[:5], "…", len(unexpected))
-        
-        m2.eval()
-        
-        with torch.inference_mode():
-            y1 = m2.eval_seq(start_x, None, self.test_num_steps, self.test_num_trials)
-        
-        print("y0 nan:", torch.isnan(y0).any().item(), "y1 nan:", torch.isnan(y1).any().item())
-        print("max |diff|:", (y0 - y1).abs().max().item())
-        
-        # -------------------------
-        # NEW: weight equality checks for diffusion and ema_diffusion
-        # keeps current stuff; only adds diagnostics
-        # -------------------------
-        def _unwrap(m):
-            return m.module if hasattr(m, "module") else m
-        
-        def _sd_equal(a_sd, b_sd):
-            # exact key match + tensor equality checks
-            if set(a_sd.keys()) != set(b_sd.keys()):
-                a_only = list(set(a_sd.keys()) - set(b_sd.keys()))[:5]
-                b_only = list(set(b_sd.keys()) - set(a_sd.keys()))[:5]
-                return False, {"reason": "key_mismatch", "a_only_head": a_only, "b_only_head": b_only}
-        
-            max_abs = 0.0
-            max_key = None
-            n_diff = 0
-            for k in a_sd.keys():
-                av = a_sd[k]
-                bv = b_sd[k]
-                # non-tensor buffers are rare, but handle gracefully
-                if torch.is_tensor(av) and torch.is_tensor(bv):
-                    if av.shape != bv.shape or av.dtype != bv.dtype:
-                        return False, {"reason": "shape_or_dtype_mismatch", "key": k,
-                                       "a_shape": tuple(av.shape), "b_shape": tuple(bv.shape),
-                                       "a_dtype": str(av.dtype), "b_dtype": str(bv.dtype)}
-                    d = (av.detach().to("cpu") - bv.detach().to("cpu")).abs().max().item()
-                    if d != 0.0:
-                        n_diff += 1
-                        if d > max_abs:
-                            max_abs = d
-                            max_key = k
-                else:
-                    if av != bv:
-                        return False, {"reason": "non_tensor_mismatch", "key": k}
-        
-            return (n_diff == 0), {"reason": "ok", "n_diff": n_diff, "max_abs": max_abs, "max_key": max_key}
-        
-        m0 = _unwrap(model)
-        m2u = _unwrap(m2)
-        
-        # diffusion weights
-        diff_eq, diff_info = _sd_equal(m0.diffusion.state_dict(), m2u.diffusion.state_dict())
-        print(f"[DEBUG] diffusion weights equal: {diff_eq} | info: {diff_info}")
-        
-        # ema_diffusion weights (only if present on both)
-        if hasattr(m0, "ema_diffusion") and hasattr(m2u, "ema_diffusion"):
-            ema_eq, ema_info = _sd_equal(m0.ema_diffusion.state_dict(), m2u.ema_diffusion.state_dict())
-            print(f"[DEBUG] ema_diffusion weights equal: {ema_eq} | info: {ema_info}")
-        else:
-            print("[DEBUG] ema_diffusion weights equal: N/A (missing on one or both models)")
-        
+
         print(NaN_clip_num)
         return NaN_clip_num

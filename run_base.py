@@ -59,7 +59,7 @@ def build_dataset(config, load_full_dataset):
     return dataset
 
 def evaluate(trainer, model, int_output_dir):
-    result = trainer.evaluate(-1, model, int_output_dir)
+    result = trainer.evaluate(-1, model, int_output_dir, out_model_file="test.pth")
     return result
 
 def create_output_dirs(out_model_file, int_output_dir):
@@ -98,8 +98,9 @@ def run(rank, num_procs, args):
     model = build_model(model_config_file, trainer.dataset, device)
     if (trained_model_path != ""):
         try:
+            print(f"Loading pretrained model with saved weights from {trained_model_path}")
             model = model_builder.build_model(model_config_file, trainer.dataset, device)
-            state_dict = torch.load(trained_model_path)
+            state_dict = torch.load(trained_model_path, map_location=device)
             model.load_state_dict(state_dict)
         except Exception as e:
             print(Exception)
@@ -114,6 +115,7 @@ def run(rank, num_procs, args):
               int_output_dir=int_output_dir, log_file=log_file)
             
     elif (mode == "eval"):
+        assert(trained_model_path != "")
         stats = evaluate(trainer, model, int_output_dir)
         return stats
     

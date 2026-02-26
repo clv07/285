@@ -28,6 +28,8 @@ class wandbLogger(object):
     def __init__(self, run_name, proj_name, config):
         wandb.init(project=proj_name, name=run_name, config=config)
         self.run_name = wandb.run.name
+        wandb.define_metric("val/lead_time")
+        wandb.define_metric("val/CRPS", step_metric="val/lead_time")
 
     def is_root(self):
         return mp_util.is_root_proc()
