@@ -16,10 +16,49 @@ import util.save as save_util
 from util.eval import compute_test_metrics, compute_long_test_metrics
 import yaml
 import os
+import random
 
 from model import model_builder      # needed to rebuild model
 
 import numpy as np
+
+def save_a_checkpoint(path, model, optimizer, epoch, extra=None):
+    ckpt = {
+        "epoch": epoch,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "rng": {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        },
+        "extra": extra or {},
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(ckpt, path)
+
+def load_checkpoint(path, model, optimizer=None, device="cpu", strict=True):
+    print(f"loading checkpoint from {path}")
+    ckpt = torch.load(path, map_location=device)
+    model.load_state_dict(ckpt["model"], strict=strict)
+
+    if optimizer is not None and "optimizer" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer"])
+
+    # Restore RNG (optional but good for exact reproducibility)
+    """
+    if "rng" in ckpt:
+        import random
+        random.setstate(ckpt["rng"]["python"])
+        np.random.set_state(ckpt["rng"]["numpy"])
+        torch.set_rng_state(ckpt["rng"]["torch"])
+        if torch.cuda.is_available() and ckpt["rng"]["cuda"] is not None:
+            torch.cuda.set_rng_state_all(ckpt["rng"]["cuda"])"""
+
+    start_epoch = int(ckpt.get("epoch", 0)) + 1
+    extra = ckpt.get("extra", {})
+    return start_epoch, extra
 
 
 def _crps_ensemble_np(samples: np.ndarray, y: float = 0.0) -> np.ndarray:
@@ -188,9 +227,15 @@ class BaseTrainer():
         self.total_epochs = self.sample_schedule.shape[0]
 
 
-    def train_model(self, model, out_model_file, int_output_dir, log_file):
+    def train_model(self, model, out_model_file, int_output_dir, log_file, resume_path=None):
         self._init_optimizer(model)
-        for ep in range(self.total_epochs):
+        start_ep = 0
+
+        if resume_path is not None and os.path.exists(resume_path):
+            start_ep, extra = load_checkpoint(
+                resume_path, model, optimizer=self.optimizer, device=self.device, strict=True
+            )
+        for ep in range(start_ep, self.total_epochs):
             loss_stats = self.train_loop(ep, model)
             if ep == 0:
                 continue
@@ -360,7 +405,15 @@ class BaseTrainer():
         if save_checkpoint:
             print("saving model checkpoint")
             # save_util.save_weight(model, result_ouput_dir+'_ep{}.pth'.format(ep))
-            save_util.save_weight(model, out_model_file)
+            save_a_checkpoint(
+                path=os.path.join(result_ouput_dir, f"latest.pth"),
+                model=model,
+                optimizer=self.optimizer,
+                epoch=ep,
+                extra={
+                    "sample_schedule": self.sample_schedule.cpu(),  # optional
+                },
+            )
         """
         # if do_long:
         long_stats_dict = {f"long/{k}": (v / n) for k, v in long_stats_dict.items()}

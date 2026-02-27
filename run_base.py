@@ -10,6 +10,7 @@ import shutil
 import torch
 import numpy as np
 
+
 import dataset.dataset_builder as dataset_builder
 import model.model_builder as model_builder
 import model.trainer_builder as trainer_builder
@@ -49,9 +50,9 @@ def build_trainer(config, device):
     trainer = trainer_builder.build_trainer(config,device)
     return trainer
 
-def train(trainer, model, out_model_file, int_output_dir, log_file):
+def train(trainer, model, out_model_file, int_output_dir, log_file, resume_path=None):
     trainer.train_model(model, out_model_file=out_model_file, 
-                      int_output_dir=int_output_dir, log_file=log_file)
+                      int_output_dir=int_output_dir, log_file=log_file, resume_path=resume_path)
     return
 
 def build_dataset(config, load_full_dataset):
@@ -87,6 +88,7 @@ def run(rank, num_procs, args):
     int_output_dir = args.parse_string("int_output_dir", "")
     master_port = args.parse_string("master_port", "")
     model_config_file = args.parse_string("model_config", "")
+    resume_path = args.parse_string("resume_path", None)
 
     mp_util.init(rank, num_procs, device, master_port)
 
@@ -112,7 +114,7 @@ def run(rank, num_procs, args):
     if (mode == "train"):
         copy_config_file(model_config_file, out_model_dir)
         train(trainer, model, out_model_file=out_model_file, 
-              int_output_dir=int_output_dir, log_file=log_file)
+              int_output_dir=int_output_dir, log_file=log_file, resume_path=resume_path)
             
     elif (mode == "eval"):
         assert(trained_model_path != "")
