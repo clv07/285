@@ -90,6 +90,8 @@ def run(rank, num_procs, args):
     model_config_file = args.parse_string("model_config", "")
     resume_path = args.parse_string("resume_path", None)
 
+    print(f"Resume path: {resume_path}")
+
     mp_util.init(rank, num_procs, device, master_port)
 
     set_np_formatting()

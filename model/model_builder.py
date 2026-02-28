@@ -1,6 +1,7 @@
 import yaml
 import model.amdm_model as amdm_model
 import model.amdm_text_model as amdm_text_model
+import model.dropout_model as dropout_model
 
 def build_model(model_config_file, dataset, device):
     model_config = load_model_file(model_config_file)
@@ -11,6 +12,8 @@ def build_model(model_config_file, dataset, device):
         model = amdm_model.AMDM(config=model_config, dataset=dataset,device=device)
     elif (model_name == amdm_text_model.AMDM.NAME):
         model = amdm_text_model.AMDM(config=model_config, dataset=dataset,device=device)
+    elif (model_name == dropout_model.DropoutModel.NAME):
+        model = dropout_model.DropoutModel(config=model_config, dataset=dataset, device=device)
     else:
         assert(False), "Unsupported model: {}".format(model_name)
         

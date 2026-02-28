@@ -202,39 +202,46 @@ class BaseTrainer():
             param_group["lr"] = lr
 
     def _get_schedule_samp_routines(self, optimizer_config):
-        self.anneal_times = optimizer_config['anneal_times']
-        self.initial_teacher_epochs = optimizer_config.get('initial_teacher_epochs',1)
-        self.end_teacher_epochs = optimizer_config.get('end_teacher_epochs',1)
-        self.teacher_epochs = optimizer_config['teacher_epochs']
-        self.ramping_epochs = optimizer_config['ramping_epochs']
-        self.student_epochs = optimizer_config['student_epochs']
-        self.use_schedule_samp = self.ramping_epochs != 0 or self.student_epochs != 0
-        
-        self.initial_schedule = torch.zeros(self.initial_teacher_epochs)
-        self.end_schedule = torch.zeros(self.end_teacher_epochs)
-        self.sample_schedule = torch.cat([ 
-                # First part is pure teacher forcing
-                torch.zeros(self.teacher_epochs),
-                # Second part with schedule sampling
-                torch.linspace(0.0, self.peak_student_rate, self.ramping_epochs),
-                # last part is pure student
-                torch.ones(self.student_epochs) * self.peak_student_rate,
-
-        ])
-        self.sample_schedule = torch.cat([self.sample_schedule  for _ in range(self.anneal_times)], axis=-1)
-        self.sample_schedule = torch.cat([self.initial_schedule, self.sample_schedule, self.end_schedule])
-       
-        self.total_epochs = self.sample_schedule.shape[0]
+        if 'total_epochs' in optimizer_config.keys():
+            self.total_epochs = optimizer_config['total_epochs']
+        else:
+            self.anneal_times = optimizer_config['anneal_times']
+            self.initial_teacher_epochs = optimizer_config.get('initial_teacher_epochs',1)
+            self.end_teacher_epochs = optimizer_config.get('end_teacher_epochs',1)
+            self.teacher_epochs = optimizer_config['teacher_epochs']
+            self.ramping_epochs = optimizer_config['ramping_epochs']
+            self.student_epochs = optimizer_config['student_epochs']
+            self.use_schedule_samp = self.ramping_epochs != 0 or self.student_epochs != 0
+            
+            self.initial_schedule = torch.zeros(self.initial_teacher_epochs)
+            self.end_schedule = torch.zeros(self.end_teacher_epochs)
+            self.sample_schedule = torch.cat([ 
+                    # First part is pure teacher forcing
+                    torch.zeros(self.teacher_epochs),
+                    # Second part with schedule sampling
+                    torch.linspace(0.0, self.peak_student_rate, self.ramping_epochs),
+                    # last part is pure student
+                    torch.ones(self.student_epochs) * self.peak_student_rate,
+    
+            ])
+            self.sample_schedule = torch.cat([self.sample_schedule  for _ in range(self.anneal_times)], axis=-1)
+            self.sample_schedule = torch.cat([self.initial_schedule, self.sample_schedule, self.end_schedule])
+           
+            self.total_epochs = self.sample_schedule.shape[0]
 
 
     def train_model(self, model, out_model_file, int_output_dir, log_file, resume_path=None):
         self._init_optimizer(model)
         start_ep = 0
 
+        if resume_path is not None:
+            assert os.path.exists(resume_path)
+
         if resume_path is not None and os.path.exists(resume_path):
             start_ep, extra = load_checkpoint(
                 resume_path, model, optimizer=self.optimizer, device=self.device, strict=True
             )
+        
         for ep in range(start_ep, self.total_epochs):
             loss_stats = self.train_loop(ep, model)
             if ep == 0:
@@ -410,9 +417,6 @@ class BaseTrainer():
                 model=model,
                 optimizer=self.optimizer,
                 epoch=ep,
-                extra={
-                    "sample_schedule": self.sample_schedule.cpu(),  # optional
-                },
             )
         """
         # if do_long:
