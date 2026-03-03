@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 import util.vis_util as vis_util
 import util.logging as logging_util
 import util.save as save_util
-from util.eval import compute_test_metrics, compute_long_test_metrics
+from util.eval import compute_test_metrics, compute_long_test_metrics, 
 import yaml
 
 class BaseTrainer():

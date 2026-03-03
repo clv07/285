@@ -5,6 +5,9 @@ import model.amdm_trainer as amdm_trainer
 import model.amdm_text_model as amdm_text_model
 import model.amdm_text_trainer as amdm_text_trainer
 
+import model.amdm_window_model as amdm_window_model
+import model.amdm_window_trainer as amdm_window_trainer
+
 import dataset.dataset_builder as dataset_builder
 
 def build_trainer(config_file, device):
@@ -15,6 +18,8 @@ def build_trainer(config_file, device):
     print("Building {} trainer".format(model_name))
     if (model_name == amdm_model.AMDM.NAME):
         trainer = amdm_trainer.AMDMTrainer(config=model_config, dataset=dataset, device=device)
+    elif (model_name == amdm_window_model.AMDM.NAME): # window model
+        trainer = amdm_window_trainer.AMDMTrainer(config=model_config, dataset=dataset, device=device)
     elif (model_name == amdm_text_model.AMDM.NAME):
         trainer = amdm_text_trainer.AMDMTrainer(config=model_config, dataset=dataset, device=device)
 
