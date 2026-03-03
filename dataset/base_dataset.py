@@ -63,6 +63,8 @@ class BaseMotionData(data.Dataset):
 
         self.test_num_init_frame = config["test"]["test_num_init_frame"]
         self.test_num_steps = config["test"]["test_num_steps"]
+        self.choose_test_indices = config["test"]["choose_test_indices"]
+        self.test_indices = config["test"]["test_indices"]
 
         rot_dim_map = {"6d":6, "expmap":3, "aa":3, "quat":4}
         self.data_rot_dim = rot_dim_map[self.data_rot_rpr]
@@ -232,7 +234,6 @@ class BaseMotionData(data.Dataset):
                         )
             
     
-            
             self.test_valid_idx_full = []
             for i_f, (idx_st, idx_ed) in enumerate(self.valid_range):
                 self.test_valid_idx_full += range(idx_st, idx_ed - self.test_num_steps)
@@ -241,8 +242,14 @@ class BaseMotionData(data.Dataset):
                 self.valid_idx += list(range(idx_st, idx_ed))
             
             self.valid_idx = np.array(self.valid_idx)
-            skip_num = max(len(self.test_valid_idx_full)//self.test_num_init_frame,1)
-            self.test_valid_idx = np.array(self.test_valid_idx_full)[::skip_num]
+            
+            if not self.choose_test_indices:
+                skip_num = max(len(self.test_valid_idx_full)//self.test_num_init_frame,1)
+                self.test_valid_idx = np.array(self.test_valid_idx_full)[::skip_num]
+            else:
+                self.test_valid_idx = np.array(self.test_indices)
+                
+            
             self.test_ref_clips = np.array([self.motion_flattened[idx:idx+self.test_num_steps] for idx in self.test_valid_idx])
 
             print('data shape:{}'.format(self.motion_flattened.shape))

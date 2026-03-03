@@ -10,6 +10,7 @@ import shutil
 import torch
 import numpy as np
 
+
 import dataset.dataset_builder as dataset_builder
 import model.model_builder as model_builder
 import model.trainer_builder as trainer_builder
@@ -49,17 +50,17 @@ def build_trainer(config, device):
     trainer = trainer_builder.build_trainer(config,device)
     return trainer
 
-def train(trainer, model, out_model_file, int_output_dir, log_file):
+def train(trainer, model, out_model_file, int_output_dir, log_file, resume_path=None):
     trainer.train_model(model, out_model_file=out_model_file, 
-                      int_output_dir=int_output_dir, log_file=log_file)
+                      int_output_dir=int_output_dir, log_file=log_file, resume_path=resume_path)
     return
 
 def build_dataset(config, load_full_dataset):
     dataset = dataset_builder.build_dataset(config, load_full_dataset)
     return dataset
 
-def evaluate(trainer, model):
-    result = trainer.evaluate_offline(model)
+def evaluate(trainer, model, int_output_dir):
+    result = trainer.evaluate(-1, model, int_output_dir, out_model_file="test.pth")
     return result
 
 def create_output_dirs(out_model_file, int_output_dir):
@@ -87,6 +88,9 @@ def run(rank, num_procs, args):
     int_output_dir = args.parse_string("int_output_dir", "")
     master_port = args.parse_string("master_port", "")
     model_config_file = args.parse_string("model_config", "")
+    resume_path = args.parse_string("resume_path", None)
+
+    print(f"Resume path: {resume_path}")
 
     mp_util.init(rank, num_procs, device, master_port)
 
@@ -96,13 +100,14 @@ def run(rank, num_procs, args):
     
     trainer = build_trainer(model_config_file, device)
     model = build_model(model_config_file, trainer.dataset, device)
-    dataset = build_dataset(model_config_file, load_full_dataset = True)
     if (trained_model_path != ""):
         try:
-            model = model_builder.build_model(model_config_file, dataset, device)
-            state_dict = torch.load(trained_model_path)
+            print(f"Loading pretrained model with saved weights from {trained_model_path}")
+            model = model_builder.build_model(model_config_file, trainer.dataset, device)
+            state_dict = torch.load(trained_model_path, map_location=device)
             model.load_state_dict(state_dict)
-        except:
+        except Exception as e:
+            print(Exception)
             model = torch.load(trained_model_path)
         
         model.to(device)
@@ -111,10 +116,11 @@ def run(rank, num_procs, args):
     if (mode == "train"):
         copy_config_file(model_config_file, out_model_dir)
         train(trainer, model, out_model_file=out_model_file, 
-              int_output_dir=int_output_dir, log_file=log_file)
+              int_output_dir=int_output_dir, log_file=log_file, resume_path=resume_path)
             
     elif (mode == "eval"):
-        stats = evaluate(trainer, model, device=device)
+        assert(trained_model_path != "")
+        stats = evaluate(trainer, model, int_output_dir)
         return stats
     
     else:

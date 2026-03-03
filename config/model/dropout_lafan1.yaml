@@ -1,37 +1,18 @@
-model_name: "AMDM"
-
-diffusion:
-    sample_mode: "ddpm"
-    estimate_mode: "epsilon"
-    loss_type: "l1"
-    noise_schedule_mode: "cosine"
-    T: 8 #40 #25
-    eval_T: 8 #40 #25
-    #denoiser: 
+model_name: "MCDropout"
 
 model_hyperparam:
     layer_num: 8
-    #cond_mask_prob: 0
-    #cond_emb_size: 256 #condition frame for [class, text, etc]
-    time_emb_size: 64 #time embediing
+    dropout_p: 0.1
     hidden_size: 1024
-    use_cond: False
-    cond_num_cls: 0
     norm_type: "group_norm"
+    use_cond: False
     act_type: "SiLU"
 
 optimizer:
-    consistency_on: False
-    consist_loss_weight: 0
-    anneal_times: 10
+    loss_type: "l1"
     initial_lr: 0.001
     final_lr: 0.000001
-    initial_teacher_epochs: 2100
-    end_teacher_epochs: 150
-    teacher_epochs: 4
-    ramping_epochs: 0
-    student_epochs: 1
-    peak_student_rate: 1
+    total_epochs: 110
     mini_batch_size: 4096
     full_T: False
     rollout: 3

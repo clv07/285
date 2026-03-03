@@ -4,6 +4,7 @@ import model.amdm_model as amdm_model
 import model.amdm_trainer as amdm_trainer
 import model.amdm_text_model as amdm_text_model
 import model.amdm_text_trainer as amdm_text_trainer
+import model.dropout_trainer as dropout_trainer
 
 import model.amdm_window_model as amdm_window_model
 import model.amdm_window_trainer as amdm_window_trainer
@@ -22,6 +23,8 @@ def build_trainer(config_file, device):
         trainer = amdm_window_trainer.AMDMTrainer(config=model_config, dataset=dataset, device=device)
     elif (model_name == amdm_text_model.AMDM.NAME):
         trainer = amdm_text_trainer.AMDMTrainer(config=model_config, dataset=dataset, device=device)
+    elif (model_name == dropout_trainer.DropoutTrainer.NAME):
+        trainer = dropout_trainer.DropoutTrainer(config=model_config, dataset=dataset, device=device)
 
     else:
         assert(False), "Unsupported trainer: {}".format(model_name)
