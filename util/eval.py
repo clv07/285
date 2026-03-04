@@ -212,6 +212,33 @@ def compute_test_metrics(links, foot_idx, output_jnts, ref_jnts):
     }
     return stats
 
+def compute_crps_ensemble(samples, y):
+    """
+    CRPS for an ensemble of samples.
+    samples: (K, D)  numpy
+    y: (D,)          numpy
+    Returns: scalar float
+    Uses L1 CRPS per dimension, averaged over D.
+    CRPS = E|X - y| - 0.5 E|X - X'|
+    """
+    samples = np.asarray(samples)
+    y = np.asarray(y)
+
+    # term1: mean absolute deviation to truth
+    term1 = np.mean(np.abs(samples - y[None, :]))
+
+    # term2: mean pairwise absolute deviation between samples
+    # compute efficiently without huge memory if K is small (your K~3-10)
+    K = samples.shape[0]
+    if K <= 1:
+        term2 = 0.0
+    else:
+        # pairwise abs diff: (K,K,D) -> mean
+        diff = np.abs(samples[:, None, :] - samples[None, :, :])
+        term2 = np.mean(diff)
+
+    return float(term1 - 0.5 * term2)
+
 if __name__ == '__main__':
     pass
     

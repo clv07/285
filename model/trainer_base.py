@@ -179,7 +179,9 @@ class BaseTrainer():
         self.frame_dim = dataset.frame_dim
         self.train_dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=True, drop_last=True)
 
-        self.logger =  logging_util.wandbLogger(proj_name="{}_{}".format(self.NAME, dataset.NAME), run_name=self.NAME, config=config)
+        # self.logger =  logging_util.wandbLogger(proj_name="{}_{}".format(self.NAME, dataset.NAME), run_name=self.NAME, config=config)
+        self.logger =  logging_util.wandbLogger(proj_name="amdm_window_motion", run_name='AMDM_WINDOW', config=config)
+        
 
         self.plot_jnts_fn = self.dataset.plot_jnts if hasattr(self.dataset, 'plot_jnts') and callable(self.dataset.plot_jnts) \
                                                         else vis_util.vis_skel

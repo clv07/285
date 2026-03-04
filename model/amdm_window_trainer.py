@@ -43,30 +43,93 @@ class AMDMTrainer(trainer_base.BaseTrainer):
         
         batch_size = sampled_frames.shape[0]
         shrinked_batch_size = batch_size//model.T
-
+        pred_window = None
         for st_index in range(self.num_rollout -1):
             self.optimizer.zero_grad()
             next_index = st_index + 1
             ground_truth = sampled_frames[:,next_index,:]
-            
+
+
             if self.full_T:
-                shrinked_batch_size = batch_size
+                Kwin = self.window_size
+                shrinked_batch_size = batch_size  # keep naming consistent
+            
+                # Build window GT for this rollout step
+                gt_start = st_index + 1
+                gt_end = gt_start + Kwin
+                ground_truth_win = sampled_frames[:, gt_start:gt_end, :]  # (B, Kwin, D) if enough frames
+            
+                # If not enough frames, stop rollout
+                if ground_truth_win.shape[1] < Kwin:
+                    break
+            
+                # Choose last_frame (B, D)
                 if st_index == 0:
-                    last_frame = sampled_frames[:,0,:]
-                    last_frame_expanded = last_frame[:,None,:].expand(-1, model.T, -1).reshape(shrinked_batch_size*model.T, -1)
+                    last_frame = sampled_frames[:, 0, :]
                 else:
-                    last_frame = pred_frame.detach().reshape(shrinked_batch_size, model.T, -1)[:,0,:]
-                    teacher_forcing_mask = torch.bernoulli(1.0-torch.ones(shrinked_batch_size, device=pred_frame.device) *sch_samp_prob).bool()
+                    if pred_window is None:
+                        last_frame = sampled_frames[:, st_index, :]
+                    else:
+                        last_frame = pred_window.detach()[:, 0, :]  # use first frame of predicted window
+            
+                    teacher_forcing_mask = torch.bernoulli(
+                        1.0 - torch.ones(batch_size, device=last_frame.device) * sch_samp_prob
+                    ).bool()
                     last_frame[teacher_forcing_mask] = sampled_frames[teacher_forcing_mask, st_index, :]
-                    last_frame_expanded = last_frame[:,None,:].expand(-1, model.T, -1).reshape(shrinked_batch_size*model.T, -1)
-
-                ground_truth_expanded = ground_truth[:,None,:].expand(-1, model.T, -1).reshape(shrinked_batch_size*model.T, -1)
-
+            
+                # Expand last_frame across diffusion timesteps -> (B*T, D)
+                last_frame_expanded = last_frame[:, None, :].expand(-1, model.T, -1).reshape(batch_size * model.T, -1)
+            
+                # Expand window GT across diffusion timesteps -> (B*T, Kwin, D)
+                ground_truth_expanded = ground_truth_win[:, None, :, :].expand(-1, model.T, -1, -1).reshape(
+                    batch_size * model.T, Kwin, -1
+                )
+            
+                # Build per-sample ts indices -> (B*T,)
                 ts = torch.arange(0, model.T, device=self.device)
-                ts = ts[None,...].expand(shrinked_batch_size,-1).reshape(-1)
-
-                diff_loss, pred_frame = model.compute_loss(last_frame_expanded, ground_truth_expanded, ts, extra_info)
+                ts = ts[None, ...].expand(batch_size, -1).reshape(-1)
+            
+                # (Optional but recommended) teacher loss: condition on true previous frame
+                teacher_last = sampled_frames[:, st_index, :]
+                teacher_last_expanded = teacher_last[:, None, :].expand(-1, model.T, -1).reshape(batch_size * model.T, -1)
+                diff_loss_teacher, _ = model.compute_loss(teacher_last_expanded, ground_truth_expanded, ts, extra_info)
+            
+                # Student loss: condition on mixed (teacher/student) frame
+                diff_loss_student, pred_x0 = model.compute_loss(last_frame_expanded, ground_truth_expanded, ts, extra_info)
+            
+                # pred_x0 is (B*T, Kwin, D) -> reshape back to (B, T, Kwin, D)
+                pred_x0 = pred_x0.reshape(batch_size, model.T, Kwin, -1)
+            
+                # Choose which diffusion step’s prediction to roll forward with.
+                # Using ts=0 slice is consistent with your original full_T logic.
+                pred_window = pred_x0[:, 0, :, :]  # (B, Kwin, D)
+            
+                diff_loss = diff_loss_student + diff_loss_teacher
                 loss = self.diffusion_loss_weight * diff_loss
+            
+            # if self.full_T:
+            #     shrinked_batch_size = batch_size
+            #     if st_index == 0:
+            #         last_frame = sampled_frames[:,0,:]
+            #         last_frame_expanded = last_frame[:,None,:].expand(-1, model.T, -1).reshape(shrinked_batch_size*model.T, -1)
+            #     else:
+            #         last_frame = pred_frame.detach().reshape(shrinked_batch_size, model.T, -1)[:,0,:]
+            #         teacher_forcing_mask = torch.bernoulli(1.0-torch.ones(shrinked_batch_size, device=pred_frame.device) *sch_samp_prob).bool()
+            #         last_frame[teacher_forcing_mask] = sampled_frames[teacher_forcing_mask, st_index, :]
+            #         last_frame_expanded = last_frame[:,None,:].expand(-1, model.T, -1).reshape(shrinked_batch_size*model.T, -1)
+                
+            #         teacher_forcing_mask = torch.bernoulli(
+            #             1.0 - torch.ones(batch_size, device=last_frame.device) * sch_samp_prob
+            #         ).bool()
+            #         last_frame[teacher_forcing_mask] = sampled_frames[teacher_forcing_mask, st_index, :]
+
+            #     ground_truth_expanded = ground_truth[:,None,:].expand(-1, model.T, -1).reshape(shrinked_batch_size*model.T, -1)
+
+            #     ts = torch.arange(0, model.T, device=self.device)
+            #     ts = ts[None,...].expand(shrinked_batch_size,-1).reshape(-1)
+
+            #     diff_loss, pred_frame = model.compute_loss(last_frame_expanded, ground_truth_expanded, ts, extra_info)
+            #     loss = self.diffusion_loss_weight * diff_loss
 
             else:
                 K = self.window_size
@@ -74,7 +137,10 @@ class AMDMTrainer(trainer_base.BaseTrainer):
                 if st_index == 0:
                     last_frame = sampled_frames[:,0,:]   # (B,D)
                 else:
-                    last_frame = pred_window.detach()[:,0,:]  # (B,D)
+                    if pred_window is None:
+                        last_frame = sampled_frames[:, st_index, :]
+                    else:
+                        last_frame = pred_window.detach()[:, 0, :]
             
                     teacher_forcing_mask = torch.bernoulli(1.0-torch.ones(batch_size, device=last_frame.device) * sch_samp_prob).bool()
                     last_frame[teacher_forcing_mask] = sampled_frames[teacher_forcing_mask, st_index, :]
@@ -87,10 +153,13 @@ class AMDMTrainer(trainer_base.BaseTrainer):
             
                 # If near end of sequence, skip
                 if ground_truth.shape[1] < K:
-                    continue
+                    # continue
+                    break
             
                 diff_loss_teacher, _ = model.compute_loss(sampled_frames[:, st_index, :], ground_truth, None, extra_info)
                 diff_loss_student, pred_window = model.compute_loss(last_frame, ground_truth, None, extra_info)
+                # reshape pred_window back to (B, T, Kwin, D) and take ts=0 slice for rollout state
+                pred_window = pred_window.reshape(batch_size, model.T, Kwin, -1)[:, 0, :, :]
             
                 diff_loss = diff_loss_student + diff_loss_teacher
                 loss = self.diffusion_loss_weight * diff_loss

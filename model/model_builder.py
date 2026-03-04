@@ -1,11 +1,8 @@
 import yaml
 import model.amdm_model as amdm_model
 import model.amdm_text_model as amdm_text_model
-<<<<<<< HEAD
 import model.amdm_window_model as amdm_window_model
-=======
 import model.dropout_model as dropout_model
->>>>>>> origin/main
 
 def build_model(model_config_file, dataset, device):
     model_config = load_model_file(model_config_file)

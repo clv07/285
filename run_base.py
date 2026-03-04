@@ -3,8 +3,8 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import os
-os.environ['WANDB_API_KEY']=''
 os.environ['WANDB_ENTITY']='285-Human-Modeling'
+os.environ['WANDB_PROJECT']='amdm-window-motion'
 import sys
 import shutil
 import torch
