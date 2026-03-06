@@ -1,4 +1,5 @@
 model_name: "MCDropout"
+wandb_project: "rollouts"
 
 model_hyperparam:
     layer_num: 8
@@ -9,20 +10,17 @@ model_hyperparam:
     act_type: "SiLU"
 
 optimizer:
-    loss_type: "crps-foot-slide"
-    initial_lr: 0.0001
-    final_lr: 0.00001
-    total_epochs: 110
+    loss_type: "l1"
+    initial_lr: 0.001
+    final_lr: 0.000001
+    total_epochs: 500
     mini_batch_size: 4096
     full_T: False
     rollout: 3
-    EMA:    
+    EMA:
         ema_decay: 0.99
         ema_start: 1000
         ema_update_rate: 1
-    muon_lr: 0.00001
-    muon_decay: 0.1
-    muon_momentum: 0.95
 
 data:   
     dataset_name: "LAFAN1"

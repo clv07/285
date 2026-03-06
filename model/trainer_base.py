@@ -7,6 +7,7 @@ from tqdm import tqdm
 import torch
 import wandb
 import torch.optim as optim
+from model.muon_optim import Muon
 
 from torch.utils.data import DataLoader
 
@@ -21,6 +22,28 @@ import random
 from model import model_builder      # needed to rebuild model
 
 import numpy as np
+
+class HybridOptim:
+    def __init__(self, opts):
+        self.opts = opts
+
+    def step(self, closure=None):
+        loss = None
+        for opt in self.opts:
+            loss = opt.step(closure=closure) if closure is not None else opt.step()
+        return loss
+
+    def zero_grad(self, set_to_none=True):
+        for opt in self.opts:
+            opt.zero_grad(set_to_none=set_to_none)
+
+    @property
+    def param_groups(self):
+        # optional: some schedulers/loggers expect this
+        groups = []
+        for opt in self.opts:
+            groups.extend(opt.param_groups)
+        return groups
 
 def save_a_checkpoint(path, model, optimizer, epoch, extra=None):
     ckpt = {
@@ -179,7 +202,12 @@ class BaseTrainer():
         self.frame_dim = dataset.frame_dim
         self.train_dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=True, drop_last=True)
 
-        self.logger =  logging_util.wandbLogger(proj_name="{}_{}".format(self.NAME, dataset.NAME), run_name=self.NAME, config=config)
+        wandb_proj = config.get("wandb_project", None)
+
+        if wandb_proj:
+            self.logger =  logging_util.wandbLogger(proj_name="wandb_proj", run_name=self.NAME, config=config)
+        else:
+            self.logger =  logging_util.wandbLogger(proj_name="{}_{}".format(self.NAME, dataset.NAME), run_name=self.NAME, config=config)
 
         self.plot_jnts_fn = self.dataset.plot_jnts if hasattr(self.dataset, 'plot_jnts') and callable(self.dataset.plot_jnts) \
                                                         else vis_util.vis_skel
@@ -193,7 +221,44 @@ class BaseTrainer():
         return    
 
     def _init_optimizer(self, model):
-        self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=self.initial_lr)
+        opt_cfg = self.config["optimizer"]
+    
+        use_muon = opt_cfg.get("muon_lr") is not None
+        base_lr = self.initial_lr
+    
+        if not use_muon:
+            self.optimizer = torch.optim.AdamW(
+                (p for p in model.parameters() if p.requires_grad),
+                lr=base_lr,
+            )
+            return
+    
+        muon_lr = opt_cfg["muon_lr"]
+        muon_wd = opt_cfg.get("muon_decay", 0.0)
+        muon_mom = opt_cfg.get("muon_momentum", 0.95)
+    
+        # --- keep it simple: Muon for 2D/4D weights, AdamW for everything else ---
+        non_muon_name_blocks = ("embed", "output", "out_", "gate", "norm", "bias")
+    
+        muon_params = []
+        adam_params = []
+    
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+    
+            is_matrix_like = (p.ndim in (2, 4))
+            is_excluded = any(tok in name.lower() for tok in non_muon_name_blocks)
+    
+            if is_matrix_like and not is_excluded:
+                muon_params.append(p)
+            else:
+                adam_params.append(p)
+    
+        adam_opt = torch.optim.AdamW(adam_params, lr=base_lr)
+        muon_opt = Muon(muon_params, lr=muon_lr, weight_decay=muon_wd, momentum=muon_mom)
+    
+        self.optimizer = HybridOptim([adam_opt, muon_opt])
 
     def _update_lr_schedule(self, optimizer, epoch):
         """Decreases the learning rate linearly"""
@@ -409,7 +474,7 @@ class BaseTrainer():
         else:
             self.logger.log_epoch(finalize_crps_log(crps_sum, crps_cnt))
 
-        if save_checkpoint:
+        if save_checkpoint and not self.config['optimizer'].get('muon_lr'):
             print("saving model checkpoint")
             # save_util.save_weight(model, result_ouput_dir+'_ep{}.pth'.format(ep))
             save_a_checkpoint(
