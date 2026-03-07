@@ -205,7 +205,7 @@ class BaseTrainer():
         wandb_proj = config.get("wandb_project", None)
 
         if wandb_proj:
-            self.logger =  logging_util.wandbLogger(proj_name="wandb_proj", run_name=self.NAME, config=config)
+            self.logger =  logging_util.wandbLogger(proj_name=wandb_proj, run_name=self.NAME, config=config)
         else:
             self.logger =  logging_util.wandbLogger(proj_name="{}_{}".format(self.NAME, dataset.NAME), run_name=self.NAME, config=config)
 
