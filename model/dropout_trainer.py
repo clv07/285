@@ -194,8 +194,32 @@ class DropoutTrainer(trainer_base.BaseTrainer):
         optimizer_config = config['optimizer']
         self.loss_type = optimizer_config.get("loss_type", "l1")
         self.use_all_pairs = optimizer_config.get('use_all_pairs', False)
+        self.crps_rollout_steps = optimizer_config.get("crps_rollout_steps", 2)
+        self.crps_horizon_weights = optimizer_config.get("crps_horizon_weights", None)
 
-    def compute_loss(self, model, last_x, next_x):
+    def _combine_crps_losses(self, losses):
+        """
+        losses: list of scalar tensors, one per rollout horizon
+        """
+        if self.crps_horizon_weights is None:
+            return torch.stack(losses).mean()
+
+        weights = torch.as_tensor(
+            self.crps_horizon_weights,
+            dtype=losses[0].dtype,
+            device=losses[0].device,
+        )
+
+        if weights.numel() != len(losses):
+            raise ValueError(
+                f"crps_horizon_weights has length {weights.numel()}, "
+                f"but rollout produced {len(losses)} losses."
+            )
+
+        weights = weights / weights.sum()
+        return (torch.stack(losses) * weights).sum()
+
+    def compute_loss(self, model, last_x, next_x, future_x=None):
         if self.loss_type == 'l1' or self.loss_type == 'l2':
             pred_x = model(last_x)
     
@@ -203,21 +227,57 @@ class DropoutTrainer(trainer_base.BaseTrainer):
                 loss_diff = torch.nn.functional.l1_loss(pred_x, next_x)
     
             elif self.loss_type == 'l2':
-                #loss_diff = torch.sum(torch.square(target - estimated), dim=-1).mean()
                 loss_diff = torch.nn.functional.mse_loss(pred_x, next_x)
         elif self.loss_type == 'crps':
-            preds = []
-            for _ in range(2):
-                preds.append(model(last_x))  # (B, C, ...)
-    
-            predicted = torch.stack(preds, dim=0)  # (E, B, C, ...)
-            truth = next_x                          # (B, C, ...)
-    
-            # If you want a scalar loss:
-            loss_diff = crps_ensemble(truth=truth, predicted=predicted, dim=())  # mean over all dims
-    
-            # You still need to return a single pred for logging; use ensemble mean:
-            pred_x = predicted.mean(dim=0)  # (B, C, ...)
+            H = self.crps_rollout_steps
+            E = self.config["optimizer"]["crps_ens"]
+
+            if future_x is None:
+                raise ValueError("CRPS requires future_x with shape (B, H, D).")
+
+            if future_x.shape[1] != H:
+                raise ValueError(
+                    f"future_x has horizon {future_x.shape[1]}, expected {H}."
+                )
+
+            B = last_x.shape[0]
+
+            # Duplicate the batch once, so each MC sample is in the same large batch.
+            # Shape: (E, B, D) -> (E*B, D)
+            x_rep = (
+                last_x.unsqueeze(0)
+                .expand(E, *last_x.shape)
+                .reshape(E * B, *last_x.shape[1:])
+            )
+
+            losses = []
+            pred_x = None
+
+            for h in range(H):
+                # One forward pass for all MC samples at this rollout step
+                pred_rep = model(x_rep)  # (E*B, D)
+
+                # Back to ensemble layout: (E, B, D)
+                predicted = pred_rep.reshape(E, B, *pred_rep.shape[1:])
+
+                truth_h = future_x[:, h, ...]  # (B, D)
+
+                losses.append(
+                    crps_ensemble(
+                        truth=truth_h,
+                        predicted=predicted,
+                        dim=(),
+                    )
+                )
+
+                # logging prediction = ensemble mean at current horizon
+                pred_x = predicted.mean(dim=0)
+
+                # autoregressive rollout: each sample feeds its own next step
+                x_rep = pred_rep
+
+            loss_diff = self._combine_crps_losses(losses)
+            return loss_diff, pred_x
         elif self.loss_type == 'crps-foot-slide':
             # ensemble
             preds = [model(last_x) for _ in range(2)]
@@ -251,9 +311,38 @@ class DropoutTrainer(trainer_base.BaseTrainer):
         for frames in pbar:
             frames = frames.to(self.device).float()
 
-            # Expect frames shaped (B, T, D) or (B, D)
-            if frames.dim() == 3:
-                B, T, D = frames.shape
+            if frames.dim() != 3:
+                raise ValueError(f"Expected frames shaped (B,T,D). Got {tuple(frames.shape)}")
+
+            B, T, D = frames.shape
+
+            if self.loss_type == 'crps':
+                H = self.crps_rollout_steps
+
+                if T < H + 1:
+                    continue
+
+                if self.use_all_pairs:
+                    # start states: t = 0 .. T-H-1
+                    # xcur shape: (B, W, D), where W = T - H
+                    xcur = frames[:, :T - H, :]  # (B, W, D)
+
+                    # future targets stacked as (B, W, H, D)
+                    future = torch.stack(
+                        [frames[:, h:T - H + h, :] for h in range(1, H + 1)],
+                        dim=2
+                    )
+
+                    # flatten windows into batch
+                    xcur = xcur.reshape(-1, D)        # (B*W, D)
+                    future = future.reshape(-1, H, D) # (B*W, H, D)
+                else:
+                    xcur = frames[:, 0, :]            # (B, D)
+                    future = frames[:, 1:H + 1, :]    # (B, H, D)
+
+                xnext = future[:, 0, :]  # first-step target, kept for API compatibility
+
+            else:
                 if T < 2:
                     continue
 
@@ -263,24 +352,16 @@ class DropoutTrainer(trainer_base.BaseTrainer):
                 else:
                     xcur = frames[:, 0, :]
                     xnext = frames[:, 1, :]
-            elif frames.dim() == 2:
-                # If dataloader already yields (B, D) pairs, this trainer can't infer xnext.
-                # Keep behavior explicit to avoid silent mistakes.
-                raise ValueError(
-                    "Expected frames shaped (B,T,D) with T>=2. Got (B,D). "
-                    "Update dataloader to return sequences or modify trainer to accept paired batches."
-                )
-            else:
-                raise ValueError(f"Unexpected frames shape: {tuple(frames.shape)}")
+
+                future = None
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            loss, pred = self.compute_loss(model, xcur, xnext)
+            loss, pred = self.compute_loss(model, xcur, xnext, future_x=future)
 
             loss.backward()
             self.optimizer.step()
 
-            # If your model implements EMA update via model.update(), keep it compatible:
             if hasattr(model, "update") and callable(model.update):
                 model.update()
 

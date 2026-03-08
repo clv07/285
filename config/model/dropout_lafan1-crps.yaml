@@ -9,14 +9,17 @@ model_hyperparam:
     act_type: "SiLU"
 
 optimizer:
-    loss_type: "crps-foot-slide"
-    initial_lr: 0.0001
+    loss_type: "crps"
+    crps_ens: 2
+    crps_rollout_steps: 5
+    crps_horizon_weights: null   # or [0.5, 0.5], or [0.3, 0.7]
+    initial_lr: 0.0002
     final_lr: 0.00001
     total_epochs: 110
-    mini_batch_size: 4096
+    mini_batch_size: 1024
     full_T: False
-    rollout: 3
-    EMA:    
+    rollout: 6
+    EMA:
         ema_decay: 0.99
         ema_start: 1000
         ema_update_rate: 1

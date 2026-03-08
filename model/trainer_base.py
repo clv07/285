@@ -175,6 +175,53 @@ def finalize_crps_pairs(crps_sum: dict, crps_cnt: dict):
     return pairs
 
 
+def _rmse_ensemble_np(output_jnts: np.ndarray, ref_jnts: float = 0.0) -> np.ndarray:
+    """
+    RMSE across ensemble members.
+
+    samples: (..., K)
+    y: scalar observation (use y=0 if samples are errors)
+    returns: (...) RMSE
+    """
+    mean_pred = np.mean(output_jnts, axis=0)         # (T,J,3)
+    diff = mean_pred - ref_jnts                      # (T,J,3)
+    mse_t = np.mean(diff ** 2, axis=(1, 2))         # (T,)
+    return np.sqrt(mse_t)
+
+def update_val_crps_rmse_running(
+    crps_sum: dict,
+    crps_cnt: dict,
+    rmse_sum: dict,
+    rmse_cnt: dict,
+    output_jnts: np.ndarray,
+    ref_jnts: np.ndarray,
+    step: int = 10,
+    prefix: str = "val",
+):
+    """
+    Accumulate CRPS and RMSE at timesteps 0, step, 2*step, ... for a single clip.
+
+    output_jnts: (K,T,J,3)
+    ref_jnts:    (T,J,3)
+    """
+    err_tk = _per_timestep_jointpos_err_np(output_jnts, ref_jnts)  # (T,K)
+    T = err_tk.shape[0]
+    rmse_t = _rmse_ensemble_np(output_jnts, ref_jnts)
+
+    for t in range(0, T, step):
+        crps_v = float(_crps_ensemble_np(err_tk[t], y=0.0))
+        if np.isfinite(crps_v):
+            key = f"{prefix}/T{t}/CRPS"
+            crps_sum[key] = crps_sum.get(key, 0.0) + crps_v
+            crps_cnt[key] = crps_cnt.get(key, 0.0) + 1.0
+
+        rmse_v = float(rmse_t[t])
+        if np.isfinite(rmse_v):
+            key = f"{prefix}/T{t}/RMSE"
+            rmse_sum[key] = rmse_sum.get(key, 0.0) + rmse_v
+            rmse_cnt[key] = rmse_cnt.get(key, 0.0) + 1.0
+
+
 class BaseTrainer():
     def __init__(self, config, dataset, device):
         self.config = config
@@ -339,6 +386,8 @@ class BaseTrainer():
         long_K = 1
         crps_sum = {}
         crps_cnt = {}
+        rmse_sum = {}
+        rmse_cnt = {}
         do_plot = (ep - self.test_interval) % (self.test_interval * self.plot_every_n_test) == 0 or ep == -1
         save_checkpoint = (ep - self.test_interval) % (self.test_interval * self.save_checkpoint_every_n_test) == 0
 
@@ -383,8 +432,9 @@ class BaseTrainer():
                     # Batched joints: (K,T,J,3)
                     output_jnts = self.dataset.x_to_jnts_batched(den, mode=mode0)
 
-                    update_val_crps_running(
+                    update_val_crps_rmse_running(
                         crps_sum, crps_cnt,
+                        rmse_sum, rmse_cnt,
                         output_jnts=output_jnts,
                         ref_jnts=ref_jnts,
                         step=self.crps_step,
@@ -462,6 +512,7 @@ class BaseTrainer():
         self.logger.log_epoch(stats_dict)
         if ep == -1:
             crps_pairs = finalize_crps_pairs(crps_sum, crps_cnt)
+            rmse_pairs = finalize_crps_pairs(rmse_sum, rmse_cnt)  # reuse; works for any metric key
         
             for t, mean_crps in crps_pairs:
                 wandb.log(
@@ -471,8 +522,18 @@ class BaseTrainer():
                         "epoch": ep,
                     }
                 )
+        
+            for t, mean_rmse in rmse_pairs:
+                wandb.log(
+                    {
+                        "val/lead_time": t,
+                        "val/RMSE": mean_rmse,
+                        "epoch": ep,
+                    }
+                )
         else:
             self.logger.log_epoch(finalize_crps_log(crps_sum, crps_cnt))
+            self.logger.log_epoch(finalize_crps_log(rmse_sum, rmse_cnt))
 
         if save_checkpoint and not self.config['optimizer'].get('muon_lr'):
             print("saving model checkpoint")
