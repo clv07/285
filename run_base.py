@@ -89,6 +89,10 @@ def run(rank, num_procs, args):
     master_port = args.parse_string("master_port", "")
     model_config_file = args.parse_string("model_config", "")
     resume_path = args.parse_string("resume_path", None)
+    cold_model_path = args.parse_string("cold_model_file", "")
+    cold_model_config = args.parse_string("cold_model_config", "")
+
+    print(f'cold model: path {cold_model_path} config {cold_model_config}')
 
     print(f"Resume path: {resume_path}")
 
@@ -112,6 +116,19 @@ def run(rank, num_procs, args):
         
         model.to(device)
         model.eval()
+
+    # load original pretrained LAFAN1 model as cold start model for window model
+    if model.NAME == 'AMDM_WINDOW':
+        if cold_model_path != "":
+            print(f"Loading cold-start model from {cold_model_path}")
+            cold_model = model_builder.build_model(cold_model_config, trainer.dataset, device)
+            checkpoint = torch.load(cold_model_path, map_location=device)
+            print("Checkpoint keys:", checkpoint.keys())
+            state_dict = checkpoint["model"] 
+            cold_model.load_state_dict(state_dict)
+            cold_model.to(device)
+            cold_model.eval()
+            trainer.cold_start = cold_model
         
     if (mode == "train"):
         copy_config_file(model_config_file, out_model_dir)

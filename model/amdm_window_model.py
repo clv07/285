@@ -2,6 +2,7 @@ import copy
 import numpy as np
 import math
 import torch
+from tqdm import tqdm
 import torch.nn as nn
 import torch.nn.functional as f
 from functools import partial
@@ -14,6 +15,7 @@ import model.modules.Embedding as Embedding
 import model.modules.Activation as Activation
 
 import dataset.util.geo as geo_util
+
 
 
 class AMDM(model_base.BaseModel):
@@ -41,6 +43,7 @@ class AMDM(model_base.BaseModel):
             self.ema_update_rate = config['optimizer']['EMA']['ema_update_rate']
             self.ema_diffusion = deepcopy(self.diffusion)
             self.ema = EMA.EMA(self.ema_decay)
+
         return
 
     def forward(self, input_lastx, input_noises, input_ts):
@@ -59,23 +62,19 @@ class AMDM(model_base.BaseModel):
         self.diffusion.to(self.device)
         return
 
-    def eval_step(self, cur_x, extra_dict=None, align_rpr=False, record_process=False):
-        diffusion = self.ema_diffusion if self.use_ema else self.diffusion
+    def eval_step(self, cur_x, extra_dict=None, align_rpr=False, record_process=False): 
+        diffusion = self.ema_diffusion if self.use_ema else self.diffusion  
         with torch.no_grad():
             if self.sample_mode == 'ddpm':
-                next_x = diffusion.sample_ddpm(cur_x, extra_dict, record_process)
+                next_x =  diffusion.sample_ddpm(cur_x, extra_dict, record_process)
             elif self.sample_mode == 'ddim':
                 next_x = diffusion.sample_ddim(cur_x, self.eval_T, 0.0, extra_dict)
             else:
-                raise AssertionError("Unsupported sample mode")
-    
-        # NEW: collapse window -> first frame for evaluation compatibility
-        if isinstance(next_x, torch.Tensor) and next_x.dim() == 3:
-            next_x = next_x[:, 0, :]
-    
+                assert(False), "Unsupported agent: {}".format(self.estimate_mode)
+
         if align_rpr:
             next_x = self.align_frame_with_angle(cur_x, next_x).type(cur_x.dtype)
-    
+
         return next_x
 
     def rl_step(self, start_x, action_dict, extra_dict):
@@ -84,84 +83,37 @@ class AMDM(model_base.BaseModel):
 
     
     def eval_seq(self, start_x, extra_dict, num_steps, num_trials, align_rpr=False, record_process=False):
-        if start_x.dim() == 1:
-            start_x = start_x[None, :]
+        """
+        start_x: (D,) or (B,D)
+        returns:
+          if not record_process: (B,K,T,D)
+          else: (B,K,T,self.T,D)  # matching your original semantics
+        """
+        if len(start_x.shape) == 1:
+            start_x = start_x[None, :]  # (1,D)
     
         B, D = start_x.shape
         K = num_trials
     
-        # (B,K,D) -> (BK,D)
+        # Expand to (B,K,D) then flatten to (B*K,D)
         x = start_x[:, None, :].expand(B, K, D).reshape(B * K, D)
     
-        output_xs = None  # allocate lazily once we know what eval_step returns
-    
-        def collapse_to_frame(x_tensor: torch.Tensor) -> torch.Tensor:
-            """
-            Convert any supported output shape to a single-frame tensor (BK,D),
-            using the most consistent rule:
-              - if window exists, take window index 0
-              - if process exists, take last time index
-            """
-            if x_tensor.dim() == 2:
-                # (BK,D)
-                return x_tensor
-    
-            if x_tensor.dim() == 3:
-                # could be (BK,W,D) or (BK,T,D)
-                # we assume if second dim equals self.T it's process, else it's window.
-                if x_tensor.shape[1] == self.T:
-                    # (BK,T,D) -> take last diffusion step
-                    return x_tensor[:, -1, :]
-                else:
-                    # (BK,W,D) -> take first window frame
-                    return x_tensor[:, 0, :]
-    
-            if x_tensor.dim() == 4:
-                # likely (BK,T,W,D) -> take last T, first W
-                return x_tensor[:, -1, 0, :]
-    
-            raise ValueError(f"Unsupported eval_step output shape: {tuple(x_tensor.shape)}")
+        if record_process:
+            output_xs = torch.zeros((B * K, num_steps, self.T, self.frame_dim), device=self.device, dtype=x.dtype)
+        else:
+            output_xs = torch.zeros((B * K, num_steps, self.frame_dim), device=self.device, dtype=x.dtype)
     
         with torch.inference_mode():
-            for j in range(num_steps):
-                x_out = self.eval_step(x, extra_dict, align_rpr, record_process)
+            for j in tqdm(range(num_steps)):
+                x = self.eval_step(x, extra_dict, align_rpr, record_process)
     
-                # Allocate output array after seeing first output
-                if output_xs is None:
-                    if record_process and isinstance(x_out, torch.Tensor) and x_out.dim() in (3, 4) and (
-                        (x_out.dim() == 3 and x_out.shape[1] == self.T) or (x_out.dim() == 4 and x_out.shape[1] == self.T)
-                    ):
-                        # we have a diffusion trajectory available
-                        output_xs = torch.zeros((B * K, num_steps, self.T, self.frame_dim),
-                                                device=self.device, dtype=x.dtype)
-                    else:
-                        # normal: store only final frames
-                        output_xs = torch.zeros((B * K, num_steps, self.frame_dim),
-                                                device=self.device, dtype=x.dtype)
+                output_xs[:, j, ...] = x
     
-                # If we're storing process, try to fill it; otherwise store collapsed frame
-                if output_xs.dim() == 4:
-                    # want (BK,T,D) per step
-                    if x_out.dim() == 3 and x_out.shape[1] == self.T:
-                        # (BK,T,D)
-                        output_xs[:, j, :, :] = x_out
-                    elif x_out.dim() == 4 and x_out.shape[1] == self.T:
-                        # (BK,T,W,D) -> choose W=0 to store (BK,T,D)
-                        output_xs[:, j, :, :] = x_out[:, :, 0, :]
-                    else:
-                        # no process available, just store repeated final frame (fallback)
-                        xf = collapse_to_frame(x_out)
-                        output_xs[:, j, :, :] = xf[:, None, :].expand(-1, self.T, -1)
-                else:
-                    # store only final frame (BK,D)
-                    xf = collapse_to_frame(x_out)
-                    output_xs[:, j, :] = xf
+                if record_process:
+                    x = x[..., -1, :]
     
-                # autoregressive update: next conditioning frame is always (BK,D)
-                x = collapse_to_frame(x_out)
-    
-        # reshape back to (B,K,...)
-        if output_xs.dim() == 4:
+        # Reshape back to (B,K, ...)
+        if record_process:
             return output_xs.reshape(B, K, num_steps, self.T, self.frame_dim)
         else:
             return output_xs.reshape(B, K, num_steps, self.frame_dim)
@@ -200,11 +152,11 @@ class AMDM(model_base.BaseModel):
             assert(False), "Unsupported estimate mode: {}".format(self.estimate_mode) 
 
         if self.loss_type == 'l1':
-            loss_diff = torch.nn.functional.l1_loss(estimated, target)
+            loss_diff = torch.nn.functional.l1_loss(estimated, target.squeeze())
 
         elif self.loss_type == 'l2':
             #loss_diff = torch.sum(torch.square(target - estimated), dim=-1).mean()
-            loss_diff = torch.nn.functional.mse_loss(estimated, target)
+            loss_diff = torch.nn.functional.mse_loss(estimated, target.squeeze())
        
         return loss_diff, pred_x0#.detach() 
     
@@ -242,7 +194,6 @@ class GaussianDiffusion(nn.Module):
         self.T = config["diffusion"]['T']
         self.schedule_mode = config["diffusion"]["noise_schedule_mode"]
         self.estimate_mode = config["diffusion"]["estimate_mode"]
-        self.window_size = config["diffusion"]["window_size"]
         self.norm_type = config["model_hyperparam"]["norm_type"]
         self.act_type = config["model_hyperparam"]["act_type"]
         self.time_emb_dim = config["model_hyperparam"]["time_emb_size"]
@@ -363,73 +314,33 @@ class GaussianDiffusion(nn.Module):
 
     @torch.no_grad()
     def sample_ddpm(self, last_x, extra_info, record_process=False):
-
-        B, D = last_x.shape
-        K = self.window_size
-
-        # single window
-        if K == 1:
-            x = torch.randn(last_x.shape[0], last_x.shape[-1]).to(last_x.device)
-            #ce = None if self.use_cond else self.cond_mlp(extra_info['cond'])
-            if record_process:
-                x0s = torch.zeros(last_x.shape[0], self.T, last_x.shape[-1], device=last_x.device)  
-    
-            for t in range(self.T - 1, -1, -1):
-                ts = torch.tensor([t], device = last_x.device).repeat(last_x.shape[0])
-                te = self.time_mlp(ts)
-    
-                pred = self.model(last_x, x, te).detach()
-                
-                if self.estimate_mode == 'epsilon':
-                    x = self.remove_noise(x, pred, ts)
-                elif self.estimate_mode == 'x0':
-                    x = pred
-                
-                if record_process:
-                    x0s[:,self.T - 1- t,:] = x
-                    
-                if t > 0:
-                    x = self.add_noise(x, ts)
-            
-            return x0s if record_process else x
-
-        # multiple window
-        x = torch.randn(B, K, D, device=last_x.device)
-
+        
+        x = torch.randn(last_x.shape[0], last_x.shape[-1]).to(last_x.device)
+        #ce = None if self.use_cond else self.cond_mlp(extra_info['cond'])
         if record_process:
-            x0s = torch.zeros(B, self.T, K, D, device=last_x.device)
-    
-        # flatten helpers
-        last_x_flat = last_x[:, None, :].expand(B, K, D).reshape(B * K, D)
-    
-        for t in range(self.T - 1, -1, -1):
-            ts = torch.tensor([t], device=last_x.device).repeat(B)     # (B,)
-            te = self.time_mlp(ts)                                     # (B,E)
-    
-            # expand and flatten time embedding for (B*K)
-            ts_flat = ts[:, None].expand(B, K).reshape(B * K)
-            te_flat = te[:, None, :].expand(B, K, -1).reshape(B * K, -1)
-    
-            x_flat = x.reshape(B * K, D)
-    
-            pred_flat = self.model(last_x_flat, x_flat, te_flat).detach()
-    
-            if self.estimate_mode == 'epsilon':
-                x_flat = self.remove_noise(x_flat, pred_flat, ts_flat)
-            elif self.estimate_mode == 'x0':
-                x_flat = pred_flat
-    
-            x = x_flat.reshape(B, K, D)
-    
-            if record_process:
-                x0s[:, self.T - 1 - t, :, :] = x
-    
-            if t > 0:
-                # add noise with correct ts per (B*K)
-                x_flat = self.add_noise(x.reshape(B * K, D), ts_flat)
-                x = x_flat.reshape(B, K, D)
+            x0s = torch.zeros(last_x.shape[0], self.T, last_x.shape[-1], device=last_x.device)  
 
-        return x0s if record_process else x
+        for t in range(self.T - 1, -1, -1):
+            ts = torch.tensor([t], device = last_x.device).repeat(last_x.shape[0])
+            te = self.time_mlp(ts)
+
+            pred = self.model(last_x, x, te).detach()
+            
+            if self.estimate_mode == 'epsilon':
+                x = self.remove_noise(x, pred, ts)
+            elif self.estimate_mode == 'x0':
+                x = pred
+            
+            if record_process:
+                x0s[:,self.T - 1- t,:] = x
+                
+            if t > 0:
+                x = self.add_noise(x, ts)
+        
+        if record_process:
+            return x0s
+        
+        return x
 
     
     def sample_rl_ddpm(self, last_x, action_dict, extra_info):
@@ -558,40 +469,12 @@ class GaussianDiffusion(nn.Module):
         
         time_emb = self.time_mlp(ts) 
 
-        # single-frame path
-        if next_x.dim() == 2:
-                
-                noise = torch.randn_like(next_x)              # (B,D)
-                perturbed_x = self.perturb_x(next_x, ts, noise)
-                estimated = self.model(cur_x, perturbed_x, time_emb)
-                return estimated, noise, perturbed_x, ts
-
-        # window path
-        elif next_x.dim() == 3:
-            
-            B, K, D = next_x.shape
-    
-            # flatten window into batch: (B*K, D)
-            next_x_flat = next_x.reshape(B * K, D)
-            noise_flat = torch.randn_like(next_x_flat)
-            
-            # expand ts/time_emb/cur_x to match (B*K)
-            ts_flat = ts[:, None].expand(B, K).reshape(B * K)         # (B*K,)
-            time_emb_flat = time_emb[:, None, :].expand(B, K, -1).reshape(B * K, -1)  # (B*K,E)
-            cur_x_flat = cur_x[:, None, :].expand(B, K, D).reshape(B * K, D)          # (B*K,D)
-    
-            perturbed_flat = self.perturb_x(next_x_flat, ts_flat, noise_flat)         # (B*K,D)
-            estimated_flat = self.model(cur_x_flat, perturbed_flat, time_emb_flat)    # (B*K,D)
-    
-            # reshape back to window: (B,K,D)
-            estimated = estimated_flat.reshape(B, K, D)
-            noise = noise_flat.reshape(B, K, D)
-            perturbed_x = perturbed_flat.reshape(B, K, D)
-    
-            return estimated, noise, perturbed_x, ts
+        noise = torch.randn_like(next_x)
+        perturbed_x = self.perturb_x(next_x, ts.clone(), noise)
         
-        else:
-            raise ValueError(f"next_x must be (B,D) or (B,K,D), got shape {next_x.shape}")
+        latent = time_emb
+        estimated = self.model(cur_x, perturbed_x, latent)
+        return estimated, noise, perturbed_x, ts
 
 
 class NoiseDecoder(nn.Module):

@@ -10,9 +10,9 @@ def build_model(model_config_file, dataset, device):
     print("Building {} model".format(model_name))
     
     if (model_name == amdm_model.AMDM.NAME):
-        model = amdm_model.AMDM(config=model_config, dataset=dataset,device=device)
+        model = amdm_model.AMDM(config=model_config, dataset=dataset,device=device)  
     elif (model_name == amdm_window_model.AMDM.NAME): # window model
-        model = amdm_window_model.AMDM(config=model_config, dataset=dataset,device=device)
+        model = amdm_window_model.AMDM(config=model_config, dataset=dataset,device=device)   
     elif (model_name == amdm_text_model.AMDM.NAME):
         model = amdm_text_model.AMDM(config=model_config, dataset=dataset,device=device)
     elif (model_name == dropout_model.DropoutModel.NAME):

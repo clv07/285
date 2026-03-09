@@ -19,8 +19,10 @@ def build_trainer(config_file, device):
     print("Building {} trainer".format(model_name))
     if (model_name == amdm_model.AMDM.NAME):
         trainer = amdm_trainer.AMDMTrainer(config=model_config, dataset=dataset, device=device)
+        
     elif (model_name == amdm_window_model.AMDM.NAME): # window model
         trainer = amdm_window_trainer.AMDMTrainer(config=model_config, dataset=dataset, device=device)
+        
     elif (model_name == amdm_text_model.AMDM.NAME):
         trainer = amdm_text_trainer.AMDMTrainer(config=model_config, dataset=dataset, device=device)
     elif (model_name == dropout_trainer.DropoutTrainer.NAME):
