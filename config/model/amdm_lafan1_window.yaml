@@ -1,5 +1,9 @@
 model_name: "AMDM_WINDOW"
 
+# wandb_project: "amdm-window-motion"
+wandb_project: "rollouts"
+
+
 diffusion:
     sample_mode: "ddpm"
     estimate_mode: "epsilon"

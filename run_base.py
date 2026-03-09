@@ -4,7 +4,6 @@ warnings.filterwarnings("ignore")
 
 import os
 os.environ['WANDB_ENTITY']='285-Human-Modeling'
-os.environ['WANDB_PROJECT']='amdm-window-motion'
 import sys
 import shutil
 import torch
@@ -105,15 +104,15 @@ def run(rank, num_procs, args):
     trainer = build_trainer(model_config_file, device)
     model = build_model(model_config_file, trainer.dataset, device)
     if (trained_model_path != ""):
-        try:
-            print(f"Loading pretrained model with saved weights from {trained_model_path}")
-            model = model_builder.build_model(model_config_file, trainer.dataset, device)
-            state_dict = torch.load(trained_model_path, map_location=device)
-            model.load_state_dict(state_dict)
-        except Exception as e:
-            print(Exception)
-            model = torch.load(trained_model_path)
-        
+        print(f"Loading pretrained model with saved weights from {trained_model_path}")
+        model = model_builder.build_model(model_config_file, trainer.dataset, device)
+        ckpt = torch.load(trained_model_path, map_location=device)
+
+        if isinstance(ckpt, dict) and "model" in ckpt:
+            model.load_state_dict(ckpt["model"])
+        else:
+            model.load_state_dict(ckpt)
+    
         model.to(device)
         model.eval()
 
