@@ -12,11 +12,11 @@ optimizer:
     loss_type: "l1"
     initial_lr: 0.001
     final_lr: 0.000001
-    total_epochs: 110
+    total_epochs: 500
     mini_batch_size: 4096
     full_T: False
     rollout: 3
-    EMA:    
+    EMA:
         ema_decay: 0.99
         ema_start: 1000
         ema_update_rate: 1
@@ -39,7 +39,7 @@ test:
     test_num_steps: 50
     test_num_trials: 10
     test_num_init_frame: 128
-    plot_indices: [0, 25, 50, 75, 100, 125]
+    plot_indices: [0, 26, 51, 76, 101, 126]
     crps_step: 5
     max_plot_traj: 3
     plot_every_n_test: 4
