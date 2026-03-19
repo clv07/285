@@ -13,16 +13,17 @@ We explore human motion prediction by building upon [Advanced Motion Diffusion M
 Our contribution shows that probabilistic fine-tuning improves both accuracy and diversity without modifying the original model architecture.
 
 ### Model Architecture
+
+This is our model architecture, same as the original model.
 <p align="center">
   <img width="100%" src="assets/model-arch.png"/>
 </p>
 
 
-<!-- ## Checkpoints (NEED THIS??)
+## Checkpoints for original model
 Download, unzip and merge with your output directory.
 
 [LAFAN1_15step](https://drive.google.com/file/d/1a3emD8C5hN4wbTuPYhI0WytSMCuGoLNs/view?usp=sharing)
- -->
  
 ## Installation
 ```
@@ -91,16 +92,13 @@ python run_base.py
 ```
 
 
-### Inference
-```
-
-```
-
 ### Sample Generated Motion
+MAE-trained Rollout 
 <p align="center">
   <img width="100%" src="assets/mae.gif"/>
 </p>
 
+CRPS-trained Rollout
 <p align="center">
   <img width="100%" src="assets/crps.gif"/>
 </p>
